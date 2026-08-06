@@ -312,7 +312,11 @@ def processa(recs, mestre_by_mneu, bd_fallback, equip_depara, margem=0.05):
         media = r["Média"]
         alvo = r["Config. valor alvo"]
         bias_pct = r["Bias (%)"]
-        usa_abs = cutoff is not None and media is not None and media < cutoff and etm_abs is not None
+        eh_nivel_1 = r["NívelNum"] == 1
+        usa_abs = (
+            cutoff is not None and etm_abs is not None
+            and (eh_nivel_1 or (media is not None and media < cutoff))
+        )
         if usa_abs:
             r["Sigma Mensal"] = calc_sigma_abs(etm_abs, media, alvo, cv)
             r["Critério Sigma"] = "absoluto"
@@ -323,7 +327,10 @@ def processa(recs, mestre_by_mneu, bd_fallback, equip_depara, margem=0.05):
         # --- Bias vs Bias Máximo (ESM) ---
         esm_cutoff = spec.get("ESM Absoluto - Cutoff")
         esm_abs = spec.get("ESM Absoluto - Valor")
-        usa_abs_esm = esm_cutoff is not None and media is not None and media < esm_cutoff and esm_abs is not None
+        usa_abs_esm = (
+            esm_cutoff is not None and esm_abs is not None
+            and (eh_nivel_1 or (media is not None and media < esm_cutoff))
+        )
         if usa_abs_esm and alvo is not None and media is not None:
             bias_max = esm_abs
             bias_obs = abs(media - alvo)
