@@ -890,6 +890,7 @@ with tab_grafico:
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
                 margin=dict(t=60),
             )
+            fig.update_xaxes(categoryorder="array", categoryarray=meses_ordenados_global)
             st.plotly_chart(fig, use_container_width=True)
             st.caption(
                 "Linha cheia = CV mensal do equipamento. Linha tracejada da mesma cor = "
@@ -949,6 +950,7 @@ with tab_grafico:
                         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
                         margin=dict(t=50),
                     )
+                    fig_n_bias.update_xaxes(categoryorder="array", categoryarray=meses_ordenados_global)
                     st.plotly_chart(fig_n_bias, use_container_width=True)
 
                 with colg2:
@@ -969,6 +971,7 @@ with tab_grafico:
                         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
                         margin=dict(t=50),
                     )
+                    fig_n_cv.update_xaxes(categoryorder="array", categoryarray=meses_ordenados_global)
                     st.plotly_chart(fig_n_cv, use_container_width=True)
 
                 st.info(
@@ -1193,6 +1196,7 @@ with tab_bias:
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
                     margin=dict(t=60),
                 )
+                fig_b.update_xaxes(categoryorder="array", categoryarray=meses_ordenados_global)
                 st.plotly_chart(fig_b, use_container_width=True)
                 st.caption(
                     "Linha cheia = Bias mensal do equipamento. Linhas tracejadas = faixa de "
@@ -1261,6 +1265,7 @@ with tab_bias:
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
                     margin=dict(t=60),
                 )
+                fig_b.update_xaxes(categoryorder="array", categoryarray=meses_ordenados_global)
                 st.plotly_chart(fig_b, use_container_width=True)
                 st.caption(
                     "Linha cheia = Bias mensal daquele nível. Linhas tracejadas = faixa de "
@@ -1417,6 +1422,7 @@ with tab_et:
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
                     margin=dict(t=60),
                 )
+                fig_e.update_xaxes(categoryorder="array", categoryarray=meses_ordenados_global)
                 st.plotly_chart(fig_e, use_container_width=True)
                 st.caption(
                     "Linha cheia = Erro Total Observado mensal. Linha tracejada = ETM daquele equipamento."
@@ -1472,6 +1478,7 @@ with tab_et:
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
                     margin=dict(t=60),
                 )
+                fig_e.update_xaxes(categoryorder="array", categoryarray=meses_ordenados_global)
                 st.plotly_chart(fig_e, use_container_width=True)
                 st.caption(
                     "Linha cheia = Erro Total Observado mensal daquele nível. Linha tracejada = "
@@ -1519,6 +1526,22 @@ with tab_periodo:
     )
 
     card_pior_cenario(df[df["Teste"] == teste_global], "Sigma Mensal", "Sigma", maior_eh_pior=False)
+
+    base_robusta = df[df["Teste"] == teste_global].dropna(subset=["Sigma Mensal"]).copy()
+    if not base_robusta.empty:
+        base_robusta["N"] = base_robusta["N"].fillna(0)
+        idx_maior_n_rb = (base_robusta.groupby(["Equipamento (nome)", "NívelNum", "_ordem_tempo"])
+                           ["N"].idxmax())
+        base_robusta = base_robusta.loc[idx_maior_n_rb]
+        pior_por_mes = base_robusta.groupby("_ordem_tempo")["Sigma Mensal"].min()
+        media_robusta = pior_por_mes.mean()
+        with st.container(border=True):
+            st.caption(f"Média Robusta do Sigma (CIQ) — pior cenário geral, todos os equipamentos e níveis")
+            st.markdown(
+                f"<span style='font-size:30px; font-weight:700;'>{media_robusta:.2f}</span>",
+                unsafe_allow_html=True,
+            )
+            st.caption(f"Média de {len(pior_por_mes)} mês(es), cada um usando o pior Sigma entre todos os equipamentos/níveis daquele mês.")
 
     st.markdown(f"**Resumo do período — {teste_global}**")
     st.caption(
