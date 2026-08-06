@@ -150,7 +150,10 @@ def to_float(v):
     if v is None or v == "" or v == "-":
         return None
     if isinstance(v, str):
-        v = v.replace(",", ".")
+        # a exportação do Infinity usa ponto como separador decimal e, em números
+        # grandes, vírgula como separador de milhar (ex: "1,060.0" = 1060.0) — então
+        # a vírgula deve ser removida, não trocada por ponto
+        v = v.replace(",", "")
     try:
         return float(v)
     except ValueError:
