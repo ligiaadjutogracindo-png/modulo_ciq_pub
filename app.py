@@ -1298,28 +1298,22 @@ with tab_bias:
             grupo_valido_b = grupo.dropna(subset=["Bias Observado (sinal)"])
             if not grupo_valido_b.empty:
                 linha["Bias Médio"] = round(grupo_valido_b["Bias Observado (sinal)"].mean(), 2)
-                idx_pior_b = grupo_valido_b["Bias Observado"].idxmax()
-                linha["Pior Bias"] = round(grupo_valido_b.loc[idx_pior_b, "Bias Observado (sinal)"], 2)
-                linha["Mês do pior"] = grupo_valido_b.loc[idx_pior_b, "Mês/Ano"]
             else:
                 linha["Bias Médio"] = None
-                linha["Pior Bias"] = None
-                linha["Mês do pior"] = None
             linhas_bt.append(linha)
 
         df_bias_tab = pd.DataFrame(linhas_bt)
-        col_fixas_bt = {"Equipamento", "Nível", "Bias Máximo", "Bias Médio", "Pior Bias", "Mês do pior"}
+        col_fixas_bt = {"Equipamento", "Nível", "Bias Máximo", "Bias Médio"}
         meses_bt = sorted([c for c in df_bias_tab.columns if c not in col_fixas_bt],
                            key=lambda m: ordem_mes_bt.get(m, 0))
-        df_bias_tab = df_bias_tab[["Equipamento", "Nível", "Bias Máximo", "Bias Médio", "Pior Bias",
-                                    "Mês do pior"] + meses_bt]
+        df_bias_tab = df_bias_tab[["Equipamento", "Nível", "Bias Máximo", "Bias Médio"] + meses_bt]
         df_bias_tab = df_bias_tab.sort_values(["Equipamento", "Nível"])
 
         def cor_bias_tab(row):
             bmax = row["Bias Máximo"]
             estilos = []
             for col in row.index:
-                if col in (meses_bt + ["Bias Médio", "Pior Bias"]) and pd.notna(row[col]) and pd.notna(bmax):
+                if col in (meses_bt + ["Bias Médio"]) and pd.notna(row[col]) and pd.notna(bmax):
                     val = abs(row[col])
                     if val > bmax:
                         estilos.append("background-color: #F4CCCC")
@@ -1334,7 +1328,7 @@ with tab_bias:
             return estilos
 
         styler_bias_tab = (df_bias_tab.style.apply(cor_bias_tab, axis=1)
-                            .format("{:.2f}", subset=["Bias Máximo", "Bias Médio", "Pior Bias"] + meses_bt,
+                            .format("{:.2f}", subset=["Bias Máximo", "Bias Médio"] + meses_bt,
                                     na_rep="—"))
         st.dataframe(styler_bias_tab, hide_index=True, use_container_width=True)
         st.caption(
@@ -1535,19 +1529,15 @@ with tab_periodo:
         for (equip, nivel), grupo in base_resumo_sigma.groupby(["Equipamento (nome)", "NívelNum"]):
             grupo = grupo.sort_values("_ordem_tempo")
             sigma_medio = round(grupo["Sigma Mensal"].mean(), 2)
-            idx_pior_s = grupo["Sigma Mensal"].idxmin()
-            pior_sigma = round(grupo.loc[idx_pior_s, "Sigma Mensal"], 2)
-            mes_pior_s = grupo.loc[idx_pior_s, "Mês/Ano"]
             linhas_rs.append({
                 "Equipamento": equip, "Nível": int(nivel),
-                "Sigma Médio (CIQ)": sigma_medio, "Pior Sigma": pior_sigma,
-                "Mês do pior": mes_pior_s, "Nº meses": len(grupo),
+                "Sigma Médio (CIQ)": sigma_medio, "Nº meses": len(grupo),
             })
 
         df_resumo_sigma = pd.DataFrame(linhas_rs).sort_values(["Equipamento", "Nível"])
         styler_resumo_sigma = (df_resumo_sigma.style
-                                .map(cor_sigma, subset=["Sigma Médio (CIQ)", "Pior Sigma"])
-                                .format("{:.2f}", subset=["Sigma Médio (CIQ)", "Pior Sigma"], na_rep="—"))
+                                .map(cor_sigma, subset=["Sigma Médio (CIQ)"])
+                                .format("{:.2f}", subset=["Sigma Médio (CIQ)"], na_rep="—"))
         st.dataframe(styler_resumo_sigma, hide_index=True, use_container_width=True)
 
     st.divider()
