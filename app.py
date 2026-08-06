@@ -1502,6 +1502,7 @@ with tab_tabela:
 # ---------------- SIGMA POR PERÍODO ----------------
 with tab_periodo:
     st.subheader("Sigma — mensal e por período")
+    st.caption(f"Teste: **{teste_global}** (mude na barra lateral, em 'Teste em foco')")
     st.caption(
         "Recalculado a partir dos dados já filtrados pela barra lateral (Período e "
         "Módulo/Plataforma) — mudar o período lá em cima muda o que aparece aqui."
@@ -1541,20 +1542,16 @@ with tab_periodo:
         st.dataframe(styler_resumo_sigma, hide_index=True, use_container_width=True)
 
     st.divider()
-    df_per_filtrado = calcula_sigma_periodos_df(df)
+    df_per_filtrado = calcula_sigma_periodos_df(df[df["Teste"] == teste_global])
 
-    pf1, pf2 = st.columns(2)
-    periodo_sel = pf1.radio("Período", ["Mensal", "Trimestral", "Semestral", "Anual"], horizontal=True)
+    periodo_sel = st.radio("Período", ["Mensal", "Trimestral", "Semestral", "Anual"], horizontal=True)
 
     if periodo_sel == "Mensal":
-        base_mensal = df.dropna(subset=["Sigma Mensal"]).copy()
+        base_mensal = df[df["Teste"] == teste_global].dropna(subset=["Sigma Mensal"]).copy()
         base_mensal["N"] = base_mensal["N"].fillna(0)
         idx_maior_n = (base_mensal.groupby(["Teste", "Equipamento (nome)", "NívelNum", "_ordem_tempo"])
                         ["N"].idxmax())
         base_mensal = base_mensal.loc[idx_maior_n]
-        f_teste_p = pf2.multiselect("Teste", sorted(base_mensal["Teste"].dropna().unique()), key="periodo_teste")
-        if f_teste_p:
-            base_mensal = base_mensal[base_mensal["Teste"].isin(f_teste_p)]
         df_p = (base_mensal[["Teste", "Equipamento (nome)", "NívelNum", "Ano", "Mês/Ano",
                               "Sigma Mensal", "CV (%)", "Bias (%)"]]
                 .rename(columns={"Equipamento (nome)": "Equipamento", "NívelNum": "Nível",
@@ -1562,10 +1559,7 @@ with tab_periodo:
         df_p = df_p.sort_values(["Teste", "Equipamento", "Nível", "Ano"])
         df_p["Nível"] = df_p["Nível"].astype(int)
     else:
-        f_teste_p = pf2.multiselect("Teste", sorted(df_per_filtrado["Teste"].dropna().unique()), key="periodo_teste")
         df_p = df_per_filtrado[df_per_filtrado["Período"] == periodo_sel]
-        if f_teste_p:
-            df_p = df_p[df_p["Teste"].isin(f_teste_p)]
         df_p = df_p.sort_values(["Teste", "Equipamento", "Nível", "Ano", "Sub-período"]).drop(columns=["Período"])
 
     cols_numericas = [c for c in ["Sigma (pior cenário)", "CV (%)", "Bias (%)"] if c in df_p.columns]
