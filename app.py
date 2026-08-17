@@ -280,6 +280,7 @@ def processa(recs, mestre_by_mneu, bd_fallback, equip_depara, margem=0.05):
         r["Equip Mapeado"] = r["Equipamento"] in equip_depara
         r["Equipamento (nome)"] = equip_depara.get(r["Equipamento"], {}).get("Célula/Rotor", r["Equipamento"])
         r["Tipo"] = equip_depara.get(r["Equipamento"], {}).get("Tipo", "?")
+        r["Módulo"] = equip_depara.get(r["Equipamento"], {}).get("Módulo", "?")
 
         spec = get_spec(r["Teste"], r["Módulo/Arquivo"], mestre_by_mneu, bd_fallback)
         r["Spec"] = spec
@@ -552,8 +553,16 @@ if nao_mapeados:
         for nome in nao_mapeados:
             st.write(f"- `{nome}`")
 
+if not recs:
+    st.warning(
+        "Nenhum registro de CIQ válido sobrou depois dos filtros e exclusões "
+        "(testes reflexo, linhas COMP, etc.). Confira se o ZIP tem os CSVs certos, "
+        "ou se algum teste que você esperava ver não está sendo excluído sem querer."
+    )
+    st.stop()
+
 df = pd.DataFrame(recs)
-df["Mês/Ano"] = df.apply(lambda r: f'{MESES_NOME.get(r["Mês"], "?")}/{str(r["Ano"])[2:]}', axis=1)
+df["Mês/Ano"] = df["Mês"].map(MESES_NOME).fillna("?") + "/" + df["Ano"].astype(str).str[-2:]
 df["_ordem_tempo"] = df["Ano"] * 12 + df["Mês"]
 
 with st.sidebar:
@@ -1487,34 +1496,105 @@ with tab_et:
                 )
 
 # ---------------- TABELA COMPLETA ----------------
+STATUS_TEXTO = {
+    "VERDE": "Abaixo da meta",
+    "AMARELO": "Próximo do limite",
+    "VERMELHO": "Acima do limite",
+}
+
 with tab_tabela:
     st.subheader("Resultados mensais completos")
 
-    colf1, colf2, colf3, colf4 = st.columns(4)
-    f_status = colf1.multiselect("Status CV", ["VERDE", "AMARELO", "VERMELHO"])
+    colf1, colf2, colf3 = st.columns(3)
+    f_status = colf1.multiselect("Status CV", list(STATUS_TEXTO.values()))
     f_teste = colf2.multiselect("Teste", sorted(df["Teste"].dropna().unique()))
     f_equip_tab = colf3.multiselect("Equipamento", sorted(df["Equipamento (nome)"].dropna().unique()))
-    f_tend = colf4.checkbox("Só com tendência de alta")
+
+    colf4, colf5 = st.columns(2)
+    ordem_mes_tab = (df[["Mês/Ano", "_ordem_tempo"]].drop_duplicates()
+                     .set_index("Mês/Ano")["_ordem_tempo"].to_dict())
+    meses_tab = sorted(df["Mês/Ano"].dropna().unique(), key=lambda m: ordem_mes_tab.get(m, 0))
+    f_mes_tab = colf4.multiselect("Mês", meses_tab)
+    f_tend = colf5.checkbox("Só com tendência de alta")
 
     df_filtrado = df.copy()
     if f_status:
-        df_filtrado = df_filtrado[df_filtrado["Status CV"].isin(f_status)]
+        status_raw = [k for k, v in STATUS_TEXTO.items() if v in f_status]
+        df_filtrado = df_filtrado[df_filtrado["Status CV"].isin(status_raw)]
     if f_teste:
         df_filtrado = df_filtrado[df_filtrado["Teste"].isin(f_teste)]
     if f_equip_tab:
         df_filtrado = df_filtrado[df_filtrado["Equipamento (nome)"].isin(f_equip_tab)]
+    if f_mes_tab:
+        df_filtrado = df_filtrado[df_filtrado["Mês/Ano"].isin(f_mes_tab)]
     if f_tend:
         df_filtrado = df_filtrado[df_filtrado["Tendência CV"] != "—"]
 
     cols_show = ["Mês/Ano", "Tipo", "Equipamento (nome)", "Teste", "Spec - Analito", "Nível", "NívelNum",
                  "Número de lote", "N", "Config. valor alvo", "Média", "CV (%)", "CV Máximo",
-                 "Status CV", "Tendência CV", "Bias (%)", "Sigma Mensal", "Critério Sigma"]
-    st.dataframe(df_filtrado[cols_show].rename(columns={"Equipamento (nome)": "Equipamento"}),
-                 hide_index=True, use_container_width=True, height=500)
+                 "Status CV", "Tendência CV", "Bias (%)", "Bias Máximo", "Status Bias",
+                 "Sigma Mensal", "Critério Sigma"]
+    df_show = df_filtrado[cols_show].rename(columns={"Equipamento (nome)": "Equipamento"}).copy()
+    df_show["Status CV"] = df_show["Status CV"].map(STATUS_TEXTO).fillna(df_show["Status CV"])
+    df_show["Status Bias"] = df_show["Status Bias"].map(STATUS_TEXTO).fillna(df_show["Status Bias"])
+    st.dataframe(df_show, hide_index=True, use_container_width=True, height=500)
     st.caption(f"{len(df_filtrado)} de {len(df)} registros exibidos")
 
-    csv = df_filtrado[cols_show].to_csv(index=False).encode("utf-8-sig")
+    csv = df_show.to_csv(index=False).encode("utf-8-sig")
     st.download_button("Baixar CSV filtrado", csv, "ciq_resultados.csv", "text/csv")
+
+    st.divider()
+    st.subheader("CV e Bias ao longo do tempo")
+    if len(f_teste) != 1:
+        st.info("Selecione exatamente um Teste no filtro acima pra ver os gráficos de tendência.")
+    else:
+        teste_grafico_tab = f_teste[0]
+        df_teste_tab = df[df["Teste"] == teste_grafico_tab]
+        if f_equip_tab:
+            df_teste_tab = df_teste_tab[df_teste_tab["Equipamento (nome)"].isin(f_equip_tab)]
+
+        col_cv_tab, col_bias_tab = st.columns(2)
+        with col_cv_tab:
+            st.markdown("**CV (%) ao longo do tempo**")
+            fig_cv_tab = go.Figure()
+            for i, (equip, grupo) in enumerate(df_teste_tab.groupby("Equipamento (nome)")):
+                grupo = grupo.copy()
+                grupo["N"] = grupo["N"].fillna(0)
+                idx_mes = grupo.groupby("_ordem_tempo")["N"].idxmax()
+                serie = grupo.loc[idx_mes].sort_values("_ordem_tempo")
+                fig_cv_tab.add_trace(go.Scatter(
+                    x=serie["Mês/Ano"], y=serie["CV (%)"], mode="lines+markers", name=equip,
+                    line=dict(color=PALETA[i % len(PALETA)], width=2), marker=dict(size=5),
+                ))
+            fig_cv_tab.update_layout(
+                xaxis_title="Mês/Ano", yaxis_title="CV (%)", height=420, hovermode="x unified",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                margin=dict(t=50),
+            )
+            fig_cv_tab.update_xaxes(categoryorder="array", categoryarray=meses_ordenados_global)
+            st.plotly_chart(fig_cv_tab, use_container_width=True)
+
+        with col_bias_tab:
+            st.markdown("**Bias ao longo do tempo**")
+            fig_bias_tab = go.Figure()
+            for i, (equip, grupo) in enumerate(df_teste_tab.groupby("Equipamento (nome)")):
+                grupo = grupo.copy()
+                grupo["N"] = grupo["N"].fillna(0)
+                idx_mes = grupo.groupby("_ordem_tempo")["N"].idxmax()
+                serie = grupo.loc[idx_mes].sort_values("_ordem_tempo")
+                fig_bias_tab.add_trace(go.Scatter(
+                    x=serie["Mês/Ano"], y=serie["Bias Observado (sinal)"], mode="lines+markers", name=equip,
+                    line=dict(color=PALETA[i % len(PALETA)], width=2), marker=dict(size=5),
+                ))
+            fig_bias_tab.add_hline(y=0, line=dict(color="#999999", width=1))
+            fig_bias_tab.update_layout(
+                xaxis_title="Mês/Ano", yaxis_title="Bias (%) ou valor absoluto", height=420,
+                hovermode="x unified",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                margin=dict(t=50),
+            )
+            fig_bias_tab.update_xaxes(categoryorder="array", categoryarray=meses_ordenados_global)
+            st.plotly_chart(fig_bias_tab, use_container_width=True)
 
 # ---------------- SIGMA POR PERÍODO ----------------
 with tab_periodo:
@@ -1525,23 +1605,36 @@ with tab_periodo:
         "Módulo/Plataforma) — mudar o período lá em cima muda o que aparece aqui."
     )
 
-    card_pior_cenario(df[df["Teste"] == teste_global], "Sigma Mensal", "Sigma", maior_eh_pior=False)
+    df_teste_sigma_f = df[df["Teste"] == teste_global]
 
-    base_robusta = df[df["Teste"] == teste_global].dropna(subset=["Sigma Mensal"]).copy()
+    card_pior_cenario(df_teste_sigma_f, "Sigma Mensal", "Sigma", maior_eh_pior=False)
+
+    base_robusta = df_teste_sigma_f.dropna(subset=["Sigma Mensal"]).copy()
     if not base_robusta.empty:
         base_robusta["N"] = base_robusta["N"].fillna(0)
         idx_maior_n_rb = (base_robusta.groupby(["Equipamento (nome)", "NívelNum", "_ordem_tempo"])
                            ["N"].idxmax())
         base_robusta = base_robusta.loc[idx_maior_n_rb]
-        pior_por_mes = base_robusta.groupby("_ordem_tempo")["Sigma Mensal"].min()
-        media_robusta = pior_por_mes.mean()
+        idx_pior_mes = base_robusta.groupby("_ordem_tempo")["Sigma Mensal"].idxmin()
+        pior_detalhe = base_robusta.loc[idx_pior_mes].sort_values("_ordem_tempo")
+        media_robusta = pior_detalhe["Sigma Mensal"].mean()
+        equip_considerados = sorted(base_robusta["Equipamento (nome)"].unique())
         with st.container(border=True):
-            st.caption(f"Média Robusta do Sigma (CIQ) — pior cenário geral, todos os equipamentos e níveis")
+            st.caption("Média Robusta do Sigma (CIQ) — pior cenário geral, todos os equipamentos e níveis")
             st.markdown(
                 f"<span style='font-size:30px; font-weight:700;'>{media_robusta:.2f}</span>",
                 unsafe_allow_html=True,
             )
-            st.caption(f"Média de {len(pior_por_mes)} mês(es), cada um usando o pior Sigma entre todos os equipamentos/níveis daquele mês.")
+            st.caption(
+                f"Média de {len(pior_detalhe)} mês(es), cada um usando o pior Sigma entre os "
+                f"equipamentos considerados: {', '.join(equip_considerados)}."
+            )
+        with st.expander("Ver o detalhe: qual foi o pior Sigma de cada mês (e de qual equipamento/nível)"):
+            tabela_pior_mes = pior_detalhe[["Mês/Ano", "Equipamento (nome)", "NívelNum", "Sigma Mensal"]].rename(
+                columns={"Equipamento (nome)": "Equipamento", "NívelNum": "Nível"})
+            tabela_pior_mes["Nível"] = tabela_pior_mes["Nível"].astype(int)
+            tabela_pior_mes["Sigma Mensal"] = tabela_pior_mes["Sigma Mensal"].round(2)
+            st.dataframe(tabela_pior_mes, hide_index=True, use_container_width=True)
 
     st.markdown(f"**Resumo do período — {teste_global}**")
     st.caption(
@@ -1550,7 +1643,7 @@ with tab_periodo:
         "dados de CIQ (a planilha original mistura CIQ com EP; quando o módulo de EP existir "
         "aqui, dá pra combinar os dois do jeito certo)."
     )
-    base_resumo_sigma = df[(df["Teste"] == teste_global)].dropna(subset=["Sigma Mensal"]).copy()
+    base_resumo_sigma = df_teste_sigma_f.dropna(subset=["Sigma Mensal"]).copy()
     if base_resumo_sigma.empty:
         st.info("Nenhum registro de Sigma para esse teste no filtro atual.")
     else:
@@ -1575,12 +1668,12 @@ with tab_periodo:
         st.dataframe(styler_resumo_sigma, hide_index=True, use_container_width=True)
 
     st.divider()
-    df_per_filtrado = calcula_sigma_periodos_df(df[df["Teste"] == teste_global])
+    df_per_filtrado = calcula_sigma_periodos_df(df_teste_sigma_f)
 
     periodo_sel = st.radio("Período", ["Mensal", "Trimestral", "Semestral", "Anual"], horizontal=True)
 
     if periodo_sel == "Mensal":
-        base_mensal = df[df["Teste"] == teste_global].dropna(subset=["Sigma Mensal"]).copy()
+        base_mensal = df_teste_sigma_f.dropna(subset=["Sigma Mensal"]).copy()
         base_mensal["N"] = base_mensal["N"].fillna(0)
         idx_maior_n = (base_mensal.groupby(["Teste", "Equipamento (nome)", "NívelNum", "_ordem_tempo"])
                         ["N"].idxmax())
