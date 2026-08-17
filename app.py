@@ -1537,6 +1537,19 @@ with tab_tabela:
     df_show = df_filtrado[cols_show].rename(columns={"Equipamento (nome)": "Equipamento"}).copy()
     df_show["Status CV"] = df_show["Status CV"].map(STATUS_TEXTO).fillna(df_show["Status CV"])
     df_show["Status Bias"] = df_show["Status Bias"].map(STATUS_TEXTO).fillna(df_show["Status Bias"])
+
+    st.markdown("**Ordenar por**")
+    colo1, colo2, colo3 = st.columns(3)
+    colunas_ordenaveis = ["(nenhuma)"] + list(df_show.columns)
+    ordenar1 = colo1.selectbox("1ª coluna", colunas_ordenaveis, key="ord1")
+    ordenar2 = colo2.selectbox("2ª coluna", colunas_ordenaveis, key="ord2")
+    ordenar3 = colo3.selectbox("3ª coluna", colunas_ordenaveis, key="ord3")
+    crescente = st.checkbox("Ordem crescente (desmarcado = decrescente)", value=True, key="ord_asc")
+
+    colunas_ordem = [c for c in [ordenar1, ordenar2, ordenar3] if c != "(nenhuma)"]
+    if colunas_ordem:
+        df_show = df_show.sort_values(by=colunas_ordem, ascending=crescente)
+
     st.dataframe(df_show, hide_index=True, use_container_width=True, height=500)
     st.caption(f"{len(df_filtrado)} de {len(df)} registros exibidos")
 
