@@ -213,34 +213,34 @@ def parse_zip(zip_bytes):
     return records, skipped, len(csv_names)
 
 
-def atribui_niveis(recs):
-    """Extrai o nível (1-4) do nome do controle; fallback: ranking por concentração dentro do mesmo mês."""
+def atribui_niveis(recs, tolerancia_mesmo_nivel=0.8):
+    """Extrai o nível (1-4) do nome do controle; fallback: agrupa por concentração dentro
+    do mesmo mês, tratando lotes com concentração próxima (dentro da tolerância) como o
+    mesmo nível — em vez de um lote novo virar um "nível" extra por engano."""
     for r in recs:
         r["NívelNum"] = extrai_nivel(r["Nível"])
         r["NívelOrigem"] = "nome do controle" if r["NívelNum"] is not None else None
 
-    grupos_mes = defaultdict(set)
-    for r in recs:
-        if r["NívelNum"] is None:
-            grupos_mes[(r["Teste"], r["Equipamento"], r["Ano"], r["Mês"])].add(r["Nível"])
-
-    media_local = {}
+    grupos = defaultdict(list)
     for r in recs:
         if r["NívelNum"] is None and r["Média"] is not None:
-            key = (r["Teste"], r["Equipamento"], r["Ano"], r["Mês"], r["Nível"])
-            media_local[key] = r["Média"]
+            grupos[(r["Teste"], r["Equipamento"], r["Ano"], r["Mês"])].append(r)
 
-    rank = {}
-    for (teste, equip, ano, mes), niveis in grupos_mes.items():
-        ordenados = sorted(niveis, key=lambda n: media_local.get((teste, equip, ano, mes, n), 0))
-        for i, n in enumerate(ordenados[:4], start=1):
-            rank[(teste, equip, ano, mes, n)] = i
+    for chave, registros in grupos.items():
+        registros_ordenados = sorted(registros, key=lambda r: r["Média"])
+        clusters = []
+        for reg in registros_ordenados:
+            if clusters and reg["Média"] <= clusters[-1][0]["Média"] * (1 + tolerancia_mesmo_nivel):
+                # concentração próxima do menor valor já visto nesse cluster —
+                # trata como o mesmo nível (provavelmente só um lote diferente)
+                clusters[-1].append(reg)
+            else:
+                clusters.append([reg])
+        for i, cluster in enumerate(clusters[:4], start=1):
+            for reg in cluster:
+                reg["NívelNum"] = i
+                reg["NívelOrigem"] = "concentração (fallback mensal, agrupado por lote)"
 
-    for r in recs:
-        if r["NívelNum"] is None:
-            key = (r["Teste"], r["Equipamento"], r["Ano"], r["Mês"], r["Nível"])
-            r["NívelNum"] = rank.get(key)
-            r["NívelOrigem"] = "concentração (fallback mensal)"
     return recs
 
 
@@ -393,10 +393,21 @@ def calcula_tendencia(recs):
         lst.sort(key=lambda r: (r["Ano"], r["Mês"]))
         for r in lst:
             r["Tendência CV"] = "—"
-        for i in range(2, len(lst)):
-            cv0, cv1, cv2 = lst[i - 2]["CV (%)"], lst[i - 1]["CV (%)"], lst[i]["CV (%)"]
+
+        # dedup por maior N dentro do mesmo mês, igual já é feito nas tabelas/gráficos —
+        # senão a checagem de tendência pode comparar lotes diferentes do mesmo mês
+        por_mes = {}
+        for r in lst:
+            chave_mes = (r["Ano"], r["Mês"])
+            n_atual = r["N"] or 0
+            if chave_mes not in por_mes or n_atual > (por_mes[chave_mes]["N"] or 0):
+                por_mes[chave_mes] = r
+        lst_dedup = [por_mes[k] for k in sorted(por_mes.keys())]
+
+        for i in range(2, len(lst_dedup)):
+            cv0, cv1, cv2 = lst_dedup[i - 2]["CV (%)"], lst_dedup[i - 1]["CV (%)"], lst_dedup[i]["CV (%)"]
             if None not in (cv0, cv1, cv2) and cv1 > cv0 and cv2 > cv1:
-                lst[i]["Tendência CV"] = "⚠ CV subindo 3+ meses seguidos"
+                lst_dedup[i]["Tendência CV"] = "⚠ CV subindo 3+ meses seguidos"
     return recs, series
 
 
@@ -470,6 +481,51 @@ def calcula_sigma_periodos_df(df_filtrado):
                 "Sub-período": sub_fmt(row["Ano"], sub_valor),
                 "Sigma (pior cenário)": row["Sigma Mensal"], "Mês do pior cenário": row["Mês/Ano"],
                 "CV (%)": row["CV (%)"], "Bias (%)": row["Bias (%)"],
+                "N meses": int(contagem.loc[row["_chave"]]),
+            })
+    return pd.DataFrame(period_records)
+
+
+def calcula_periodos_generico(df_filtrado, coluna_pior, coluna_maximo, nome_metrica,
+                               pior_eh_maior=True, coluna_exibir=None):
+    """Versão genérica de calcula_sigma_periodos_df: agrega Trimestral/Semestral/Anual
+    pegando o pior cenário (maior ou menor valor, conforme a métrica) de cada período,
+    por Teste+Equipamento+Nível. Usada por CV, Bias e Erro Total."""
+    coluna_exibir = coluna_exibir or coluna_pior
+    base = df_filtrado.dropna(subset=[coluna_pior, coluna_maximo]).copy()
+    if base.empty:
+        return pd.DataFrame(columns=["Teste", "Equipamento", "Nível", "Período", "Ano", "Sub-período",
+                                      nome_metrica, nome_metrica + " Máximo", "Mês do pior cenário",
+                                      "N meses"])
+
+    base["N"] = base["N"].fillna(0)
+    idx_maior_n = base.groupby(["Teste", "Equipamento (nome)", "NívelNum", "_ordem_tempo"])["N"].idxmax()
+    base = base.loc[idx_maior_n]
+
+    base["Trimestre"] = base["Mês"].apply(periodo_trimestre)
+    base["Semestre"] = base["Mês"].apply(periodo_semestre)
+
+    period_records = []
+    for (periodo_nome, cols, sub_fmt) in [
+        ("Trimestral", ["Teste", "Equipamento (nome)", "NívelNum", "Ano", "Trimestre"], lambda a, s: f"T{s}"),
+        ("Semestral", ["Teste", "Equipamento (nome)", "NívelNum", "Ano", "Semestre"], lambda a, s: f"S{s}"),
+        ("Anual", ["Teste", "Equipamento (nome)", "NívelNum", "Ano"], lambda a, s: str(a)),
+    ]:
+        if pior_eh_maior:
+            idx_pior = base.groupby(cols)[coluna_pior].idxmax()
+        else:
+            idx_pior = base.groupby(cols)[coluna_pior].idxmin()
+        contagem = base.groupby(cols).size()
+        piores = base.loc[idx_pior.values].copy()
+        piores["_chave"] = list(zip(*[piores[c] for c in cols])) if len(cols) > 1 else piores[cols[0]]
+        for _, row in piores.iterrows():
+            sub_valor = row[cols[-1]] if len(cols) > 4 else None
+            period_records.append({
+                "Teste": row["Teste"], "Equipamento": row["Equipamento (nome)"],
+                "Nível": int(row["NívelNum"]), "Período": periodo_nome, "Ano": int(row["Ano"]),
+                "Sub-período": sub_fmt(row["Ano"], sub_valor),
+                nome_metrica: row[coluna_exibir], nome_metrica + " Máximo": row[coluna_maximo],
+                "Mês do pior cenário": row["Mês/Ano"],
                 "N meses": int(contagem.loc[row["_chave"]]),
             })
     return pd.DataFrame(period_records)
@@ -633,6 +689,59 @@ def card_pior_cenario(df_teste, coluna_valor, nome_metrica, usa_abs=False, maior
             st.markdown(f"**{pior['Mês/Ano']}**")
 
 
+def renderiza_secao_periodo(df_teste, coluna_pior, coluna_maximo, nome_metrica, key_prefix,
+                             pior_eh_maior=True, coluna_exibir=None, usa_abs_cor=False):
+    """Seção com seletor Trimestral/Semestral/Anual e tabela colorida do pior cenário de
+    cada período — mesma lógica já usada na aba Sigma, generalizada pra CV/Bias/Erro Total."""
+    st.markdown(f"**{nome_metrica} por período (Trimestral/Semestral/Anual)**")
+    col_periodo, col_mes = st.columns([2, 3])
+    periodo_sel_x = col_periodo.radio(
+        "Período", ["Trimestral", "Semestral", "Anual"], horizontal=True, key=f"{key_prefix}_periodo"
+    )
+    meses_teste_x = sorted(df_teste["Mês/Ano"].dropna().unique(),
+                            key=lambda m: meses_ordenados_global.index(m) if m in meses_ordenados_global else 0)
+    f_mes_x = col_mes.multiselect(
+        "Mês (filtro, além do período da barra lateral)", meses_teste_x, key=f"{key_prefix}_mes_filtro"
+    )
+    if f_mes_x:
+        df_teste = df_teste[df_teste["Mês/Ano"].isin(f_mes_x)]
+
+    df_per_x = calcula_periodos_generico(
+        df_teste, coluna_pior, coluna_maximo, nome_metrica,
+        pior_eh_maior=pior_eh_maior, coluna_exibir=coluna_exibir,
+    )
+    if df_per_x.empty:
+        st.info(f"Sem dados de {nome_metrica} suficientes pra esse teste no filtro atual.")
+        return
+    df_p_x = df_per_x[df_per_x["Período"] == periodo_sel_x].sort_values(
+        ["Equipamento", "Nível", "Ano", "Sub-período"]
+    ).drop(columns=["Período"])
+
+    def cor_periodo_x(row):
+        maximo = row[nome_metrica + " Máximo"]
+        val = row[nome_metrica]
+        if pd.isna(val) or pd.isna(maximo):
+            return [""] * len(row)
+        val_comp = abs(val) if usa_abs_cor else val
+        if val_comp > maximo:
+            cor = "background-color: #F4CCCC"
+        elif val_comp >= maximo * 0.95:
+            cor = "background-color: #FFCC80"
+        elif val_comp >= maximo * 0.90:
+            cor = "background-color: #FFF9C4"
+        else:
+            cor = "background-color: #D9EAD3"
+        return [cor if c == nome_metrica else "" for c in row.index]
+
+    styler_x = (df_p_x.style.apply(cor_periodo_x, axis=1)
+                .format("{:.2f}", subset=[nome_metrica, nome_metrica + " Máximo"], na_rep="—"))
+    st.dataframe(styler_x, hide_index=True, use_container_width=True)
+    st.caption(
+        f"🟩 dentro do limite · 🟧 dentro de 5% do {nome_metrica} Máximo · 🟨 dentro de 10% · "
+        f"🟥 acima do limite. 'Mês do pior cenário' mostra qual mês daquele período gerou o valor."
+    )
+
+
 with st.sidebar:
     st.header("Teste em foco")
     teste_global = st.selectbox(
@@ -658,33 +767,71 @@ with tab_dash:
     status_b_counts = Counter(df["Status Bias"].dropna())
     status_e_counts = Counter(df["Status Erro Total"].dropna())
 
+    if "drill_metrica" not in st.session_state:
+        st.session_state["drill_metrica"] = None
+        st.session_state["drill_status"] = None
+
+    def cartao_status(col, label, contagem, metrica, status_key):
+        col.metric(label, contagem)
+        if contagem > 0:
+            if col.button("Ver testes", key=f"btn_{metrica}_{status_key}", use_container_width=True):
+                st.session_state["drill_metrica"] = metrica
+                st.session_state["drill_status"] = status_key
+
     st.markdown("**CV**")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Avaliados", sum(status_counts.values()))
-    c2.metric("🟩 Dentro do limite", status_counts.get("VERDE", 0))
-    c3.metric(f"🟨 Próximo ({margem_pct}%)", status_counts.get("AMARELO", 0))
-    c4.metric("🟥 Acima do máximo", status_counts.get("VERMELHO", 0))
+    cartao_status(c2, "🟩 Dentro do limite", status_counts.get("VERDE", 0), "CV", "VERDE")
+    cartao_status(c3, f"🟨 Próximo ({margem_pct}%)", status_counts.get("AMARELO", 0), "CV", "AMARELO")
+    cartao_status(c4, "🟥 Acima do máximo", status_counts.get("VERMELHO", 0), "CV", "VERMELHO")
 
     st.markdown("**Bias**")
     b1, b2, b3, b4 = st.columns(4)
     b1.metric("Avaliados", sum(status_b_counts.values()))
-    b2.metric("🟩 Dentro do limite", status_b_counts.get("VERDE", 0))
-    b3.metric(f"🟨 Próximo ({margem_pct}%)", status_b_counts.get("AMARELO", 0))
-    b4.metric("🟥 Acima do máximo", status_b_counts.get("VERMELHO", 0))
+    cartao_status(b2, "🟩 Dentro do limite", status_b_counts.get("VERDE", 0), "Bias", "VERDE")
+    cartao_status(b3, f"🟨 Próximo ({margem_pct}%)", status_b_counts.get("AMARELO", 0), "Bias", "AMARELO")
+    cartao_status(b4, "🟥 Acima do máximo", status_b_counts.get("VERMELHO", 0), "Bias", "VERMELHO")
 
     st.markdown("**Erro Total**")
     e1, e2, e3, e4 = st.columns(4)
     e1.metric("Avaliados", sum(status_e_counts.values()))
-    e2.metric("🟩 Dentro do limite", status_e_counts.get("VERDE", 0))
-    e3.metric(f"🟨 Próximo ({margem_pct}%)", status_e_counts.get("AMARELO", 0))
-    e4.metric("🟥 Acima do máximo", status_e_counts.get("VERMELHO", 0))
+    cartao_status(e2, "🟩 Dentro do limite", status_e_counts.get("VERDE", 0), "Erro Total", "VERDE")
+    cartao_status(e3, f"🟨 Próximo ({margem_pct}%)", status_e_counts.get("AMARELO", 0), "Erro Total", "AMARELO")
+    cartao_status(e4, "🟥 Acima do máximo", status_e_counts.get("VERMELHO", 0), "Erro Total", "VERMELHO")
+
+    if st.session_state["drill_metrica"]:
+        metrica_sel = st.session_state["drill_metrica"]
+        status_sel = st.session_state["drill_status"]
+        coluna_status = {"CV": "Status CV", "Bias": "Status Bias", "Erro Total": "Status Erro Total"}[metrica_sel]
+        colunas_valor = {
+            "CV": ["CV (%)", "CV Máximo"],
+            "Bias": ["Bias Observado (sinal)", "Bias Máximo"],
+            "Erro Total": ["Erro Total Observado", "ETM (para comparação)"],
+        }[metrica_sel]
+        status_label = {"VERDE": "🟩 dentro do limite", "AMARELO": "🟨 próximo do limite",
+                         "VERMELHO": "🟥 acima do máximo"}[status_sel]
+
+        st.divider()
+        col_titulo, col_fechar = st.columns([5, 1])
+        col_titulo.subheader(f"{metrica_sel} — testes {status_label}")
+        if col_fechar.button("✕ Fechar", use_container_width=True):
+            st.session_state["drill_metrica"] = None
+            st.session_state["drill_status"] = None
+            st.rerun()
+
+        df_drill = df[df[coluna_status] == status_sel][
+            ["Mês/Ano", "Teste", "Equipamento (nome)", "Nível", "NívelNum", "_ordem_tempo"] + colunas_valor
+        ].rename(columns={"Equipamento (nome)": "Equipamento"}).sort_values("_ordem_tempo").drop(columns=["_ordem_tempo"])
+        st.dataframe(df_drill, hide_index=True, use_container_width=True, height=400)
+        st.caption(f"{len(df_drill)} registro(s) encontrado(s) com os filtros globais atuais.")
 
     st.divider()
     st.subheader("Top 15 testes — CV fora da meta")
     top_verm = (df[df["Status CV"] == "VERMELHO"]["Teste"]
                 .value_counts().head(15).reset_index())
     top_verm.columns = ["Teste", "Ocorrências"]
-    st.dataframe(top_verm, hide_index=True, use_container_width=True)
+    col_top15, _ = st.columns([1, 2])
+    col_top15.dataframe(top_verm, hide_index=True, use_container_width=True, height=250)
 
     def bloco_ofensores(titulo, coluna_valor, coluna_maximo, nome_maximo, usa_abs=False):
         st.divider()
@@ -733,19 +880,19 @@ with tab_dash:
             ultimos = serie.loc[idx_mes, ["_ordem_tempo", "Mês/Ano", coluna_valor]].sort_values("_ordem_tempo")
             linha = {
                 "Teste": row["Teste"], "Equipamento": row["Equipamento (nome)"],
-                "Nível": int(row["NívelNum"]), nome_maximo: row[coluna_maximo], "Faixa": row["Faixa"],
+                "Nível": int(row["NívelNum"]), nome_maximo: row[coluna_maximo],
             }
             for _, mrow in ultimos.iterrows():
                 linha[mrow["Mês/Ano"]] = round(mrow[coluna_valor], 2)
             linhas.append(linha)
 
         traj = pd.DataFrame(linhas)
-        col_fixas = {"Teste", "Equipamento", "Nível", nome_maximo, "Faixa"}
+        col_fixas = {"Teste", "Equipamento", "Nível", nome_maximo}
         meses_presentes = [c for c in traj.columns if c not in col_fixas]
         ordem_mes = (df[["Mês/Ano", "_ordem_tempo"]].drop_duplicates()
                      .set_index("Mês/Ano")["_ordem_tempo"].to_dict())
         meses_cols = sorted(meses_presentes, key=lambda m: ordem_mes.get(m, 0))
-        traj = traj[["Teste", "Equipamento", "Nível", nome_maximo, "Faixa"] + meses_cols]
+        traj = traj[["Teste", "Equipamento", "Nível", nome_maximo] + meses_cols]
 
         def cor_celula(row):
             maximo = row[nome_maximo]
@@ -835,8 +982,16 @@ with tab_dash:
 
 # ---------------- CV ----------------
 with tab_grafico:
-    card_pior_cenario(df[df["Teste"] == teste_global], "CV (%)", "CV")
+    df_teste_cv_base = df[df["Teste"] == teste_global]
 
+    card_pior_cenario(df_teste_cv_base, "CV (%)", "CV")
+
+    renderiza_secao_periodo(
+        df_teste_cv_base, "CV (%)", "CV Máximo", "CV", key_prefix="cv",
+        pior_eh_maior=True,
+    )
+
+    st.divider()
     modo = st.radio(
         "Comparar por:", ["Equipamento (mesmo teste/nível, entre equipamentos)",
                            "Nível (mesmo teste/equipamento, entre níveis)"],
@@ -849,7 +1004,7 @@ with tab_grafico:
         teste_sel = teste_global
         st.caption(f"Teste: **{teste_sel}** (mude na barra lateral, em 'Teste em foco')")
 
-        df_teste = df[df["Teste"] == teste_sel]
+        df_teste = df_teste_cv_base
         niveis_disponiveis = sorted(df_teste["NívelNum"].dropna().unique())
         if not niveis_disponiveis:
             st.info("Nenhum nível identificado para esse teste.")
@@ -917,7 +1072,7 @@ with tab_grafico:
 
         teste_sel_n = teste_global
         st.caption(f"Teste: **{teste_sel_n}** (mude na barra lateral, em 'Teste em foco')")
-        df_teste_n = df[df["Teste"] == teste_sel_n]
+        df_teste_n = df_teste_cv_base
         equip_n_opts = sorted(df_teste_n["Equipamento (nome)"].dropna().unique())
         if not equip_n_opts:
             st.info("Nenhum equipamento disponível para esse teste.")
@@ -999,7 +1154,7 @@ with tab_grafico:
 
     teste_cv_tabela = teste_global
     st.caption(f"Teste: **{teste_cv_tabela}** (mude na barra lateral, em 'Teste em foco')")
-    df_teste_cvtab = df[df["Teste"] == teste_cv_tabela].dropna(subset=["NívelNum"]).copy()
+    df_teste_cvtab = df_teste_cv_base.dropna(subset=["NívelNum"]).copy()
 
     if df_teste_cvtab.empty:
         st.info("Nenhum registro para esse teste no filtro atual.")
@@ -1070,6 +1225,83 @@ with tab_grafico:
         st.dataframe(styler_cv_tab, hide_index=True, use_container_width=True)
         st.caption("🟩 dentro do limite · 🟧 dentro de 5% do CV Máximo · 🟨 dentro de 10% · 🟥 acima do CV Máximo.")
 
+        # --- Alertas de tendência (visual, com mini-gráfico) ---
+        st.markdown("**Alertas de tendência**")
+        st.caption(
+            "Cada mini-gráfico mostra os meses de CV daquele equipamento/nível (dados já "
+            "filtrados) — trecho em vermelho = os 3 meses de subida contínua que geraram o "
+            "alerta. Linha tracejada = CV Máximo."
+        )
+
+        def detecta_janela_subida(serie_ordenada):
+            """Acha a última sequência de meses consecutivos com CV subindo (3 ou mais),
+            dentro da série já ordenada cronologicamente (mesma base usada no gráfico).
+            Se a subida continuar por mais de 3 meses, a sequência inteira é destacada."""
+            valores = serie_ordenada["CV (%)"].tolist()
+            janela_encontrada = None
+            inicio_sequencia = 0
+            for i in range(1, len(valores)):
+                anterior, atual = valores[i - 1], valores[i]
+                if anterior is None or atual is None or atual <= anterior:
+                    inicio_sequencia = i
+                    continue
+                if i - inicio_sequencia >= 2:  # 3 pontos ou mais na sequência (2+ subidas seguidas)
+                    janela_encontrada = (inicio_sequencia, i)
+            return janela_encontrada
+
+        alertas_visuais = []
+        for (equip, nivel), grupo in base_ct.groupby(["Equipamento (nome)", "NívelNum"]):
+            serie_ordenada = grupo.sort_values("_ordem_tempo").reset_index(drop=True)
+            janela = detecta_janela_subida(serie_ordenada)
+            if janela:
+                alertas_visuais.append((equip, nivel, serie_ordenada, janela))
+
+        if not alertas_visuais:
+            st.success("Nenhum alerta de tendência de alta pro período/filtro atual.")
+        else:
+            n_cols_tend = 3
+            for i in range(0, len(alertas_visuais), n_cols_tend):
+                cols_tend = st.columns(n_cols_tend)
+                for col, (equip, nivel, serie_ordenada, janela) in zip(cols_tend, alertas_visuais[i:i + n_cols_tend]):
+                    with col:
+                        ini_janela, fim_janela = janela
+                        # mostra um pouco de contexto antes E depois da janela de subida
+                        ini_exibicao = max(0, ini_janela - 2)
+                        fim_exibicao = min(len(serie_ordenada), fim_janela + 3)
+                        serie_exibir = serie_ordenada.iloc[ini_exibicao:fim_exibicao].reset_index(drop=True)
+                        idx_subida_inicio = ini_janela - ini_exibicao
+                        idx_subida_fim = fim_janela - ini_exibicao
+                        serie_subida = serie_exibir.iloc[idx_subida_inicio:idx_subida_fim + 1]
+
+                        with st.container(border=True):
+                            fig_tend = go.Figure()
+                            fig_tend.add_trace(go.Scatter(
+                                x=serie_exibir["Mês/Ano"], y=serie_exibir["CV (%)"],
+                                mode="lines+markers", line=dict(color="#999999", width=2),
+                                marker=dict(size=6, color="#999999"), showlegend=False,
+                            ))
+                            fig_tend.add_trace(go.Scatter(
+                                x=serie_subida["Mês/Ano"], y=serie_subida["CV (%)"],
+                                mode="lines+markers", line=dict(color="#C0392B", width=4),
+                                marker=dict(size=9, color="#C0392B"), showlegend=False,
+                            ))
+                            cvmax_alerta = serie_exibir["CV Máximo"].dropna()
+                            if not cvmax_alerta.empty:
+                                fig_tend.add_hline(
+                                    y=cvmax_alerta.iloc[-1], line=dict(color="#C0392B", width=1, dash="dash"),
+                                )
+                            fig_tend.update_layout(
+                                height=180, margin=dict(l=10, r=10, t=10, b=10),
+                                xaxis=dict(tickfont=dict(size=9)), yaxis=dict(tickfont=dict(size=9)),
+                            )
+                            fig_tend.update_xaxes(
+                                categoryorder="array", categoryarray=meses_ordenados_global
+                            )
+                            st.markdown(f"⚠️ **{equip} · Nível {int(nivel)}**")
+                            st.plotly_chart(fig_tend, use_container_width=True,
+                                             config={"displayModeBar": False},
+                                             key=f"tend_{equip}_{int(nivel)}")
+
         # --- Tabela de Média mensal ---
         linhas_media_ct = []
         for (equip, nivel), grupo in base_ct.groupby(["Equipamento (nome)", "NívelNum"]):
@@ -1107,6 +1339,12 @@ with tab_bias:
 
     card_pior_cenario(df_teste_b, "Bias Observado", "Bias")
 
+    renderiza_secao_periodo(
+        df_teste_b, "Bias Observado", "Bias Máximo", "Bias", key_prefix="bias",
+        pior_eh_maior=True, coluna_exibir="Bias Observado (sinal)", usa_abs_cor=True,
+    )
+
+    st.divider()
     modo_b = st.radio(
         "Comparar por:", ["Equipamento (mesmo nível, entre equipamentos)",
                            "Nível (mesmo equipamento, entre níveis)"],
@@ -1297,7 +1535,7 @@ with tab_bias:
 
     teste_bias_tabela = teste_global
     st.caption(f"Teste: **{teste_bias_tabela}** (mude na barra lateral, em 'Teste em foco')")
-    df_teste_btab = df[df["Teste"] == teste_bias_tabela].dropna(subset=["NívelNum"]).copy()
+    df_teste_btab = df_teste_b.dropna(subset=["NívelNum"]).copy()
 
     if df_teste_btab.empty:
         st.info("Nenhum registro para esse teste no filtro atual.")
@@ -1375,6 +1613,12 @@ with tab_et:
 
     card_pior_cenario(df_teste_e, "Erro Total Observado", "Erro Total")
 
+    renderiza_secao_periodo(
+        df_teste_e, "Erro Total Observado", "ETM (para comparação)", "Erro Total", key_prefix="et",
+        pior_eh_maior=True,
+    )
+
+    st.divider()
     modo_e = st.radio(
         "Comparar por:", ["Equipamento (mesmo nível, entre equipamentos)",
                            "Nível (mesmo equipamento, entre níveis)"],
@@ -1496,51 +1740,35 @@ with tab_et:
                 )
 
 # ---------------- TABELA COMPLETA ----------------
-STATUS_TEXTO = {
-    "VERDE": "Abaixo da meta",
-    "AMARELO": "Próximo do limite",
-    "VERMELHO": "Acima do limite",
-}
-
 with tab_tabela:
     st.subheader("Resultados mensais completos")
 
     colf1, colf2, colf3 = st.columns(3)
-    f_status = colf1.multiselect("Status CV", list(STATUS_TEXTO.values()))
-    f_teste = colf2.multiselect("Teste", sorted(df["Teste"].dropna().unique()))
-    f_equip_tab = colf3.multiselect("Equipamento", sorted(df["Equipamento (nome)"].dropna().unique()))
-
-    colf4, colf5 = st.columns(2)
+    f_teste = colf1.multiselect("Teste", sorted(df["Teste"].dropna().unique()))
+    f_equip_tab = colf2.multiselect("Equipamento", sorted(df["Equipamento (nome)"].dropna().unique()))
     ordem_mes_tab = (df[["Mês/Ano", "_ordem_tempo"]].drop_duplicates()
                      .set_index("Mês/Ano")["_ordem_tempo"].to_dict())
     meses_tab = sorted(df["Mês/Ano"].dropna().unique(), key=lambda m: ordem_mes_tab.get(m, 0))
-    f_mes_tab = colf4.multiselect("Mês", meses_tab)
-    f_tend = colf5.checkbox("Só com tendência de alta")
+    f_mes_tab = colf3.multiselect("Mês", meses_tab)
 
     df_filtrado = df.copy()
-    if f_status:
-        status_raw = [k for k, v in STATUS_TEXTO.items() if v in f_status]
-        df_filtrado = df_filtrado[df_filtrado["Status CV"].isin(status_raw)]
     if f_teste:
         df_filtrado = df_filtrado[df_filtrado["Teste"].isin(f_teste)]
     if f_equip_tab:
         df_filtrado = df_filtrado[df_filtrado["Equipamento (nome)"].isin(f_equip_tab)]
     if f_mes_tab:
         df_filtrado = df_filtrado[df_filtrado["Mês/Ano"].isin(f_mes_tab)]
-    if f_tend:
-        df_filtrado = df_filtrado[df_filtrado["Tendência CV"] != "—"]
 
     cols_show = ["Mês/Ano", "Tipo", "Equipamento (nome)", "Teste", "Spec - Analito", "Nível", "NívelNum",
                  "Número de lote", "N", "Config. valor alvo", "Média", "CV (%)", "CV Máximo",
-                 "Status CV", "Tendência CV", "Bias (%)", "Bias Máximo", "Status Bias",
-                 "Sigma Mensal", "Critério Sigma"]
-    df_show = df_filtrado[cols_show].rename(columns={"Equipamento (nome)": "Equipamento"}).copy()
-    df_show["Status CV"] = df_show["Status CV"].map(STATUS_TEXTO).fillna(df_show["Status CV"])
-    df_show["Status Bias"] = df_show["Status Bias"].map(STATUS_TEXTO).fillna(df_show["Status Bias"])
+                 "Bias Observado (sinal)", "Bias Máximo", "Sigma Mensal", "Critério Sigma", "_ordem_tempo"]
+    df_show = df_filtrado[cols_show].rename(columns={
+        "Equipamento (nome)": "Equipamento", "Bias Observado (sinal)": "Bias",
+    }).copy()
 
     st.markdown("**Ordenar por**")
     colo1, colo2, colo3 = st.columns(3)
-    colunas_ordenaveis = ["(nenhuma)"] + list(df_show.columns)
+    colunas_ordenaveis = ["(nenhuma)"] + [c for c in df_show.columns if c != "_ordem_tempo"]
     ordenar1 = colo1.selectbox("1ª coluna", colunas_ordenaveis, key="ord1")
     ordenar2 = colo2.selectbox("2ª coluna", colunas_ordenaveis, key="ord2")
     ordenar3 = colo3.selectbox("3ª coluna", colunas_ordenaveis, key="ord3")
@@ -1548,13 +1776,57 @@ with tab_tabela:
 
     colunas_ordem = [c for c in [ordenar1, ordenar2, ordenar3] if c != "(nenhuma)"]
     if colunas_ordem:
-        df_show = df_show.sort_values(by=colunas_ordem, ascending=crescente)
+        # "Mês/Ano" é texto (Abr, Ago, Dez...) e ordenaria por ordem alfabética errada —
+        # usa a coluna cronológica escondida (_ordem_tempo) como critério real nesse caso
+        chaves_ordem = ["_ordem_tempo" if c == "Mês/Ano" else c for c in colunas_ordem]
+        df_show = df_show.sort_values(by=chaves_ordem, ascending=crescente)
+    df_show = df_show.drop(columns=["_ordem_tempo"])
 
-    st.dataframe(df_show, hide_index=True, use_container_width=True, height=500)
-    st.caption(f"{len(df_filtrado)} de {len(df)} registros exibidos")
+    def cor_faixa_generica(val, maximo, usa_abs=False):
+        if pd.isna(val) or pd.isna(maximo):
+            return ""
+        v = abs(val) if usa_abs else val
+        if v > maximo:
+            return "background-color: #F4CCCC"
+        elif v >= maximo * 0.95:
+            return "background-color: #FFCC80"
+        elif v >= maximo * 0.90:
+            return "background-color: #FFF9C4"
+        return "background-color: #D9EAD3"
+
+    def cor_coluna_cv(s):
+        maximos = df_show.loc[s.index, "CV Máximo"]
+        return [cor_faixa_generica(v, m) for v, m in zip(s, maximos)]
+
+    def cor_coluna_bias(s):
+        maximos = df_show.loc[s.index, "Bias Máximo"]
+        return [cor_faixa_generica(v, m, usa_abs=True) for v, m in zip(s, maximos)]
+
+    LIMITE_LINHAS = 3000
+    total_filtrado = len(df_show)
+    if not (f_teste or f_equip_tab or f_mes_tab) and total_filtrado > LIMITE_LINHAS:
+        st.info(
+            f"Sem nenhum filtro aplicado, mostrando só as primeiras {LIMITE_LINHAS} de "
+            f"{total_filtrado} linhas (a tabela colorida fica pesada demais com tudo de uma vez). "
+            "Use os filtros acima (Teste, Equipamento ou Mês) pra ver o restante."
+        )
+        df_show_exibir = df_show.head(LIMITE_LINHAS)
+    else:
+        df_show_exibir = df_show
+
+    styler_tab = (df_show_exibir.style
+                  .apply(cor_coluna_cv, subset=["CV (%)"])
+                  .apply(cor_coluna_bias, subset=["Bias"])
+                  .format("{:.2f}", subset=["CV (%)", "CV Máximo", "Bias", "Bias Máximo"], na_rep="—"))
+    st.dataframe(styler_tab, hide_index=True, use_container_width=True, height=500)
+    st.caption(
+        f"{len(df_show_exibir)} de {len(df)} registros exibidos. 🟩 dentro do limite · "
+        "🟧 dentro de 5% do máximo · 🟨 dentro de 10% · 🟥 acima do limite (CV e Bias coloridos "
+        "conforme a distância do respectivo valor máximo)."
+    )
 
     csv = df_show.to_csv(index=False).encode("utf-8-sig")
-    st.download_button("Baixar CSV filtrado", csv, "ciq_resultados.csv", "text/csv")
+    st.download_button("Baixar CSV filtrado (todas as linhas, sem limite)", csv, "ciq_resultados.csv", "text/csv")
 
     st.divider()
     st.subheader("CV e Bias ao longo do tempo")
@@ -1692,10 +1964,10 @@ with tab_periodo:
                         ["N"].idxmax())
         base_mensal = base_mensal.loc[idx_maior_n]
         df_p = (base_mensal[["Teste", "Equipamento (nome)", "NívelNum", "Ano", "Mês/Ano",
-                              "Sigma Mensal", "CV (%)", "Bias (%)"]]
+                              "Sigma Mensal", "CV (%)", "Bias (%)", "_ordem_tempo"]]
                 .rename(columns={"Equipamento (nome)": "Equipamento", "NívelNum": "Nível",
                                   "Sigma Mensal": "Sigma (pior cenário)", "Mês/Ano": "Sub-período"}))
-        df_p = df_p.sort_values(["Teste", "Equipamento", "Nível", "Ano"])
+        df_p = df_p.sort_values(["Teste", "Equipamento", "Nível", "_ordem_tempo"]).drop(columns=["_ordem_tempo"])
         df_p["Nível"] = df_p["Nível"].astype(int)
     else:
         df_p = df_per_filtrado[df_per_filtrado["Período"] == periodo_sel]
