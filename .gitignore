@@ -1,10 +1,6 @@
 # Não subir para o GitHub:
-# PDFs/CSVs originais do CAP e ControlLab (pesados e com dados do laboratório)
-dados_ep/originais/
-# configuração local (caminhos de pastas deste computador) e histórico
-dados_ep/config_ep.json
-dados_ep/ep_origens.csv
-dados_ep/ep_log.txt
+# base de EP e arquivos originais: vão pelo "pacote de EP" (.zip), não pelo GitHub
+dados_ep/
 # cópias de segurança e arquivos temporários
 app_20*.py
 *_backup_*.xlsx

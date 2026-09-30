@@ -668,6 +668,10 @@ with st.sidebar:
         "A tabela de especificações (ETM, ESM, CV Máximo por nível) já vem "
         "embutida no app — só é preciso subir os dados novos do Infinity."
     )
+    pacote_ep = st.file_uploader(
+        "Base de EP (.zip) — opcional", type="zip", key="pacote_ep",
+        help="Pacote gerado na aba EP (\"Baixar pacote de EP\"). No app online, é assim que a base de EP "
+             "chega: ele não lê os PDFs do CAP nem guarda arquivos entre uma sessão e outra.")
     st.header("Margem de proximidade")
     margem_opcao = st.radio(
         "Sinalizar em amarelo quando estiver a quantos % do limite?",
@@ -1920,10 +1924,22 @@ with tab_ep:
                 del st.session_state["ep_pendente"]
                 st.rerun()
 
+    # base de EP: pacote enviado na barra lateral + o que houver na base local (sem duplicar)
+    rodadas_pacote = None
     base_ep = carrega_base_ep(_mtime(ep_base.ARQ_RESULTADOS))
+    if pacote_ep is not None:
+        try:
+            base_pacote, rodadas_pacote = ep_base.le_pacote(pacote_ep.getvalue())
+            base_ep = (ep_base.consolida(base_pacote, base_ep.to_dict("records")) if len(base_ep)
+                       else base_pacote)
+            st.caption(f"📦 Base de EP do pacote enviado ({pacote_ep.name}): {len(base_pacote)} resultado(s)"
+                       + (f"; {len(base_ep)} ao juntar com a base local." if len(base_ep) != len(base_pacote) else "."))
+        except (ValueError, zipfile.BadZipFile) as e:
+            st.error(f"Não foi possível usar o pacote de EP: {e}")
     depara_ep = carrega_depara_ep(_mtime(ARQ_DEPARA_EP))
     if base_ep.empty:
-        st.info("A base de EP ainda está vazia — use \"Atualizar base de EP\" acima.")
+        st.info("A base de EP ainda está vazia — suba o pacote de EP na barra lateral ou use "
+                "\"Atualizar base de EP\" acima.")
     else:
         b = base_ep.copy()
         b["Módulo/Programa"] = b["Programa"].where(b["Provedor"] != "CAP",
@@ -1996,6 +2012,10 @@ with tab_ep:
                 Equip_prov=("Equipamento Provedor", lambda s: "; ".join(sorted({x for x in s if x}))),
                 Amostras=("Especime", "nunique")).reset_index())
             salvas = ep_base.carrega_rodadas()
+            if rodadas_pacote is not None:
+                # escolhas que vieram no pacote; as salvas nesta sessão (arquivo local) valem por cima
+                salvas = (pd.concat([rodadas_pacote, salvas], ignore_index=True)
+                          .drop_duplicates(CHAVE_RODADA, keep="last"))
             rodadas = rodadas.merge(salvas, how="left", on=CHAVE_RODADA)
             rodadas["Equipamento"] = rodadas["Equipamento"].fillna("")
             rodadas["Origem"] = rodadas["Equipamento"].map(lambda e: "salvo" if e else "")
@@ -2064,11 +2084,19 @@ with tab_ep:
                                                                       options=ep_calculo.FORMULAS_SIGMA),
                 },
             )
-            if st.button("Salvar escolhas de equipamento/viés/fórmula", key="ep_salvar_rodadas"):
-                novas = editado[editado["Equipamento"] != ""][CHAVE_RODADA + list(editaveis)]
-                todas = pd.concat([salvas, novas], ignore_index=True).drop_duplicates(CHAVE_RODADA, keep="last")
-                ep_base.grava_rodadas(todas)
-                st.success(f"{len(novas)} escolha(s) gravada(s) em dados_ep/ep_rodadas.csv.")
+            escolhas_atuais = (pd.concat([salvas, editado[editado["Equipamento"] != ""][CHAVE_RODADA + list(editaveis)]],
+                                         ignore_index=True).drop_duplicates(CHAVE_RODADA, keep="last"))
+            cs1, cs2 = st.columns(2)
+            if cs1.button("Salvar escolhas de equipamento/viés/fórmula", key="ep_salvar_rodadas"):
+                ep_base.grava_rodadas(escolhas_atuais)
+                st.success(f"{len(escolhas_atuais)} escolha(s) gravada(s) em dados_ep/ep_rodadas.csv."
+                           + (" No app online elas valem só nesta sessão: baixe o pacote de EP para guardá-las."
+                              if app_online else ""))
+            cs2.download_button(
+                "📦 Baixar pacote de EP (.zip)", ep_base.monta_pacote(base_ep, escolhas_atuais),
+                f"pacote_ep_{pd.Timestamp.today():%Y-%m-%d}.zip", "application/zip", key="ep_baixar_pacote",
+                help="Base de EP + as escolhas desta tabela. Suba este arquivo na barra lateral do app online "
+                     "(ou guarde como cópia de segurança).")
 
             # ---- 4. Resultados ----
             grupos_ep = {k: g for k, g in mapeado.groupby(CHAVE_RODADA)}

@@ -39,6 +39,7 @@ ARQ_RODADAS = PASTA_DADOS / "ep_rodadas.csv"
 ARQ_ORIGENS = PASTA_DADOS / "ep_origens.csv"
 ARQ_CONFIG = PASTA_DADOS / "config_ep.json"
 ARQ_LOG = PASTA_DADOS / "ep_log.txt"
+ARQ_PACOTE = PASTA_DADOS / "pacote_ep.zip"   # refeito a cada atualização — é o que vai para o app online
 PASTA_ORIGINAIS = PASTA_DADOS / "originais"
 
 # Laboratório (participante) do ControlLab considerado — cada regional tem um número.
@@ -232,14 +233,18 @@ def processa_entradas(entradas, hashes_conhecidos=frozenset(), pdftotext="pdftot
 # ------------------------------------------------------------------
 # Base consolidada
 # ------------------------------------------------------------------
+def _le_base(fonte):
+    base = pd.read_csv(fonte, dtype={c: str for c in TEXTO}, encoding="utf-8-sig")
+    base["Data Envio"] = pd.to_datetime(base["Data Envio"], errors="coerce").dt.date
+    for c in TEXTO:
+        base[c] = base[c].fillna("") if c in base.columns else ""
+    return base
+
+
 def carrega_base():
     if not ARQ_RESULTADOS.exists():
         return pd.DataFrame(columns=COLUNAS)
-    base = pd.read_csv(ARQ_RESULTADOS, dtype={c: str for c in TEXTO}, encoding="utf-8-sig")
-    base["Data Envio"] = pd.to_datetime(base["Data Envio"], errors="coerce").dt.date
-    for c in TEXTO:
-        base[c] = base[c].fillna("")
-    return base
+    return _le_base(ARQ_RESULTADOS)
 
 
 def carrega_registro():
@@ -276,24 +281,65 @@ def grava(linhas_novas, registro_novo, arquivar_originais=True):
                 str(r.get("Programa") or "")
             destino.mkdir(parents=True, exist_ok=True)
             (destino / r["Arquivo"]).write_bytes(r["_bytes"])
+    ARQ_PACOTE.write_bytes(monta_pacote(base, carrega_rodadas()))
     return base
 
 
-def carrega_rodadas():
-    colunas = ["Provedor", "Programa", "Rodada", "Mneumonico", "Sistema", "Equipamento", "Modo Viés",
-               "Fórmula Sigma"]
-    if not ARQ_RODADAS.exists():
-        return pd.DataFrame(columns=colunas)
-    df = pd.read_csv(ARQ_RODADAS, dtype=str, encoding="utf-8-sig").fillna("")
-    for c in colunas:   # arquivos gravados antes de existir a coluna "Fórmula Sigma"
+COLUNAS_RODADAS = ["Provedor", "Programa", "Rodada", "Mneumonico", "Sistema", "Equipamento", "Modo Viés",
+                   "Fórmula Sigma"]
+
+
+def _le_rodadas(fonte):
+    df = pd.read_csv(fonte, dtype=str, encoding="utf-8-sig").fillna("")
+    for c in COLUNAS_RODADAS:   # arquivos gravados antes de existir a coluna "Fórmula Sigma"
         if c not in df.columns:
             df[c] = ""
-    return df[colunas]
+    return df[COLUNAS_RODADAS]
+
+
+def carrega_rodadas():
+    if not ARQ_RODADAS.exists():
+        return pd.DataFrame(columns=COLUNAS_RODADAS)
+    return _le_rodadas(ARQ_RODADAS)
 
 
 def grava_rodadas(df):
     PASTA_DADOS.mkdir(exist_ok=True)
     df.to_csv(ARQ_RODADAS, index=False, encoding="utf-8-sig")
+    ARQ_PACOTE.write_bytes(monta_pacote(carrega_base(), df))
+
+
+# ------------------------------------------------------------------
+# Pacote de EP (.zip) — leva a base pronta para o app online, que não lê PDF nem guarda arquivos
+# ------------------------------------------------------------------
+def monta_pacote(base, rodadas=None):
+    """Zip com a base de EP já processada (e as escolhas de equipamento/viés/fórmula)."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("ep_resultados.csv", base.to_csv(index=False).encode("utf-8-sig"))
+        if rodadas is not None and len(rodadas):
+            z.writestr("ep_rodadas.csv", rodadas.to_csv(index=False).encode("utf-8-sig"))
+        datas = pd.to_datetime(base["Data Envio"], errors="coerce")
+        z.writestr("LEIA-ME.txt", (
+            f"Pacote da base de EP gerado em {datetime.now():%d/%m/%Y %H:%M}.\n"
+            f"{len(base)} resultado(s) ({', '.join(f'{p}: {n}' for p, n in base['Provedor'].value_counts().items())}), "
+            f"rodadas de {datas.min():%m/%Y} a {datas.max():%m/%Y}.\n"
+            f"{0 if rodadas is None else len(rodadas)} escolha(s) de equipamento/viés/fórmula.\n\n"
+            "Para usar: no app, barra lateral → \"Base de EP (.zip)\". Não descompacte.\n").encode("utf-8"))
+    return buf.getvalue()
+
+
+def le_pacote(conteudo):
+    """Pacote gerado por monta_pacote → (base, rodadas ou None)."""
+    with zipfile.ZipFile(io.BytesIO(conteudo)) as z:
+        nomes = {Path(n).name: n for n in z.namelist()}
+        if "ep_resultados.csv" not in nomes:
+            raise ValueError("este .zip não é um pacote de EP (falta o ep_resultados.csv) — use o pacote "
+                             "gerado na aba EP (\"Baixar pacote de EP\").")
+        base = _le_base(io.BytesIO(z.read(nomes["ep_resultados.csv"])))
+        rodadas = (_le_rodadas(io.BytesIO(z.read(nomes["ep_rodadas.csv"])))
+                   if "ep_rodadas.csv" in nomes else None)
+    return base, rodadas
 
 
 # ------------------------------------------------------------------
@@ -412,6 +458,12 @@ def localiza_pdftotext():
 
 if __name__ == "__main__":
     # modo robô: sem argumentos varre as pastas configuradas; com argumentos importa esses caminhos
+    if len(sys.argv) >= 2 and sys.argv[1] == "--pacote":
+        # python ep_base.py --pacote [destino.zip]: gera o pacote da base atual (para o app online)
+        destino = Path(sys.argv[2] if len(sys.argv) > 2 else f"pacote_ep_{datetime.now():%Y-%m-%d}.zip")
+        destino.write_bytes(monta_pacote(carrega_base(), carrega_rodadas()))
+        print(f"Pacote gerado: {destino.resolve()}")
+        sys.exit(0)
     exe = localiza_pdftotext()
     if not exe:
         sys.exit("pdftotext não encontrado (vem com o Git for Windows).")
