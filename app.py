@@ -59,7 +59,7 @@ def _hash_arquivos_referencia():
 
 
 @st.cache_data
-def load_reference(_assinatura):
+def load_reference(assinatura):   # sem "_" no nome: o cache só é refeito se o parâmetro for considerado
     df_mestre = pd.read_excel(REF_DIR / "tabela_mestre.xlsx").astype(object)
     mestre = df_mestre.where(pd.notna(df_mestre), None).to_dict("records")
 
@@ -670,8 +670,10 @@ with st.sidebar:
     )
     pacote_ep = st.file_uploader(
         "Base de EP (.zip) — opcional", type="zip", key="pacote_ep",
-        help="Pacote gerado na aba EP (\"Baixar pacote de EP\"). No app online, é assim que a base de EP "
-             "chega: ele não lê os PDFs do CAP nem guarda arquivos entre uma sessão e outra.")
+        help="O arquivo pacote_ep.zip (pasta dados_ep do app, ou \"Baixar pacote de EP\" na aba EP). "
+             "Um arquivo só, com CAP e ControlLab juntos — não os zips originais dos provedores. No app "
+             "online, é assim que a base de EP chega: ele não lê os PDFs do CAP nem guarda arquivos.")
+    st.caption("Base de EP: envie só o **pacote_ep.zip** — ele já traz CAP e ControlLab juntos.")
     st.header("Margem de proximidade")
     margem_opcao = st.radio(
         "Sinalizar em amarelo quando estiver a quantos % do limite?",
@@ -1756,13 +1758,16 @@ def _mtime(caminho):
     return caminho.stat().st_mtime_ns if caminho.exists() else 0
 
 
+# Obs.: o st.cache_data ignora parâmetros que começam com "_"; a assinatura (data do arquivo) precisa
+# de nome sem "_" pra que o cache seja refeito quando o arquivo muda.
 @st.cache_data(show_spinner=False)
-def carrega_depara_ep(_assinatura):
+def carrega_depara_ep(assinatura, conteudo=None):
+    """De-para de testes EP → Infinity: o que veio no pacote de EP (conteudo) ou o de reference_data."""
     colunas = ["Provedor", "Módulo/Programa", "Teste Provedor", "Unidade Provedor", "Mneumonico Infinity",
                "Fator", "Confiança", "Observação"]
-    if not ARQ_DEPARA_EP.exists():
+    if conteudo is None and not ARQ_DEPARA_EP.exists():
         return pd.DataFrame(columns=colunas)
-    d = pd.read_excel(ARQ_DEPARA_EP, dtype=str)
+    d = pd.read_excel(io.BytesIO(conteudo) if conteudo is not None else ARQ_DEPARA_EP, dtype=str)
     for c in colunas:
         if c not in d.columns:
             d[c] = ""
@@ -1774,7 +1779,7 @@ def carrega_depara_ep(_assinatura):
 
 
 @st.cache_data(show_spinner=False)
-def carrega_base_ep(_assinatura):
+def carrega_base_ep(assinatura):
     return ep_base.carrega_base()
 
 
@@ -1802,6 +1807,9 @@ with tab_ep:
     # No app online (Streamlit Cloud, servidor Linux fora da rede do Sabin) não há acesso às pastas
     # da rede: a atualização por pasta só roda com o app aberto num computador Windows do Sabin.
     app_online = os.name != "nt"
+    if app_online and pacote_ep is None:
+        st.info("📦 Para ver a base de EP, suba o **pacote_ep.zip** no campo **\"Base de EP (.zip)\"** da "
+                "barra lateral (à esquerda, logo abaixo do zip do CIQ).")
     config_ep = ep_base.carrega_config()
     if (not app_online and config_ep["automatico"] and config_ep["pastas"]
             and not st.session_state.get("ep_sync_feito")):
@@ -1887,7 +1895,20 @@ with tab_ep:
         pasta_ep = st.text_input("…ou uma pasta (ou .zip) do computador", key="ep_pasta",
                                  placeholder=r"D:\Ligia\EP_entrada")
         if st.button("Ler arquivos", key="ep_ler"):
-            entradas = [(f.name, f.getvalue()) for f in (arquivos_ep or [])]
+            entradas = []
+            for f in (arquivos_ep or []):
+                conteudo = f.getvalue()
+                if f.name.lower().endswith(".zip"):
+                    try:
+                        eh_pacote = any(Path(n).name == "ep_resultados.csv"
+                                        for n in zipfile.ZipFile(io.BytesIO(conteudo)).namelist())
+                    except zipfile.BadZipFile:
+                        eh_pacote = False
+                    if eh_pacote:
+                        st.warning(f"\"{f.name}\" é um pacote de EP — suba-o no campo \"Base de EP (.zip)\" da "
+                                   "barra lateral (à esquerda), não aqui.")
+                        continue
+                entradas.append((f.name, conteudo))
             if pasta_ep.strip():
                 if Path(pasta_ep.strip()).exists():
                     entradas = [*entradas, *ep_base.entradas_de_caminhos([pasta_ep.strip()])]
@@ -1925,18 +1946,23 @@ with tab_ep:
                 st.rerun()
 
     # base de EP: pacote enviado na barra lateral + o que houver na base local (sem duplicar)
-    rodadas_pacote = None
+    rodadas_pacote = depara_pacote = None
     base_ep = carrega_base_ep(_mtime(ep_base.ARQ_RESULTADOS))
     if pacote_ep is not None:
         try:
-            base_pacote, rodadas_pacote = ep_base.le_pacote(pacote_ep.getvalue())
+            base_pacote, rodadas_pacote, depara_pacote = ep_base.le_pacote(pacote_ep.getvalue())
             base_ep = (ep_base.consolida(base_pacote, base_ep.to_dict("records")) if len(base_ep)
                        else base_pacote)
             st.caption(f"📦 Base de EP do pacote enviado ({pacote_ep.name}): {len(base_pacote)} resultado(s)"
                        + (f"; {len(base_ep)} ao juntar com a base local." if len(base_ep) != len(base_pacote) else "."))
         except (ValueError, zipfile.BadZipFile) as e:
             st.error(f"Não foi possível usar o pacote de EP: {e}")
-    depara_ep = carrega_depara_ep(_mtime(ARQ_DEPARA_EP))
+    # de-para: o que veio no pacote tem prioridade (o app online não depende do arquivo no GitHub)
+    depara_ep = carrega_depara_ep(_mtime(ARQ_DEPARA_EP), depara_pacote)
+    if depara_ep.empty and not base_ep.empty:
+        st.warning("De-para de testes não encontrado (nem no pacote de EP, nem em "
+                   "reference_data/ep_depara_testes.xlsx) — sem ele nenhum teste do EP é correlacionado com o "
+                   "Infinity. Gere o pacote de novo num computador que tenha o de-para (ele vai junto).")
     if base_ep.empty:
         st.info("A base de EP ainda está vazia — suba o pacote de EP na barra lateral ou use "
                 "\"Atualizar base de EP\" acima.")
@@ -2093,7 +2119,7 @@ with tab_ep:
                            + (" No app online elas valem só nesta sessão: baixe o pacote de EP para guardá-las."
                               if app_online else ""))
             cs2.download_button(
-                "📦 Baixar pacote de EP (.zip)", ep_base.monta_pacote(base_ep, escolhas_atuais),
+                "📦 Baixar pacote de EP (.zip)", ep_base.monta_pacote(base_ep, escolhas_atuais, depara_pacote),
                 f"pacote_ep_{pd.Timestamp.today():%Y-%m-%d}.zip", "application/zip", key="ep_baixar_pacote",
                 help="Base de EP + as escolhas desta tabela. Suba este arquivo na barra lateral do app online "
                      "(ou guarde como cópia de segurança).")

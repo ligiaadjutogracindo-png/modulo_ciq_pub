@@ -312,25 +312,34 @@ def grava_rodadas(df):
 # ------------------------------------------------------------------
 # Pacote de EP (.zip) — leva a base pronta para o app online, que não lê PDF nem guarda arquivos
 # ------------------------------------------------------------------
-def monta_pacote(base, rodadas=None):
-    """Zip com a base de EP já processada (e as escolhas de equipamento/viés/fórmula)."""
+ARQ_DEPARA = Path(__file__).parent / "reference_data" / "ep_depara_testes.xlsx"
+
+
+def monta_pacote(base, rodadas=None, depara_bytes=None):
+    """Zip com a base de EP já processada, as escolhas de equipamento/viés/fórmula e o de-para de
+    testes (assim o app online não depende do de-para estar no GitHub)."""
+    if depara_bytes is None and ARQ_DEPARA.exists():
+        depara_bytes = ARQ_DEPARA.read_bytes()
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("ep_resultados.csv", base.to_csv(index=False).encode("utf-8-sig"))
         if rodadas is not None and len(rodadas):
             z.writestr("ep_rodadas.csv", rodadas.to_csv(index=False).encode("utf-8-sig"))
+        if depara_bytes:
+            z.writestr("ep_depara_testes.xlsx", depara_bytes)
         datas = pd.to_datetime(base["Data Envio"], errors="coerce")
         z.writestr("LEIA-ME.txt", (
             f"Pacote da base de EP gerado em {datetime.now():%d/%m/%Y %H:%M}.\n"
             f"{len(base)} resultado(s) ({', '.join(f'{p}: {n}' for p, n in base['Provedor'].value_counts().items())}), "
             f"rodadas de {datas.min():%m/%Y} a {datas.max():%m/%Y}.\n"
-            f"{0 if rodadas is None else len(rodadas)} escolha(s) de equipamento/viés/fórmula.\n\n"
+            f"{0 if rodadas is None else len(rodadas)} escolha(s) de equipamento/viés/fórmula.\n"
+            f"De-para de testes: {'incluído' if depara_bytes else 'NÃO incluído'}.\n\n"
             "Para usar: no app, barra lateral → \"Base de EP (.zip)\". Não descompacte.\n").encode("utf-8"))
     return buf.getvalue()
 
 
 def le_pacote(conteudo):
-    """Pacote gerado por monta_pacote → (base, rodadas ou None)."""
+    """Pacote gerado por monta_pacote → (base, rodadas ou None, bytes do de-para ou None)."""
     with zipfile.ZipFile(io.BytesIO(conteudo)) as z:
         nomes = {Path(n).name: n for n in z.namelist()}
         if "ep_resultados.csv" not in nomes:
@@ -339,7 +348,8 @@ def le_pacote(conteudo):
         base = _le_base(io.BytesIO(z.read(nomes["ep_resultados.csv"])))
         rodadas = (_le_rodadas(io.BytesIO(z.read(nomes["ep_rodadas.csv"])))
                    if "ep_rodadas.csv" in nomes else None)
-    return base, rodadas
+        depara = z.read(nomes["ep_depara_testes.xlsx"]) if "ep_depara_testes.xlsx" in nomes else None
+    return base, rodadas, depara
 
 
 # ------------------------------------------------------------------
