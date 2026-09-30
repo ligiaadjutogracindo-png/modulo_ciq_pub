@@ -306,7 +306,9 @@ def carrega_rodadas():
 def grava_rodadas(df):
     PASTA_DADOS.mkdir(exist_ok=True)
     df.to_csv(ARQ_RODADAS, index=False, encoding="utf-8-sig")
-    ARQ_PACOTE.write_bytes(monta_pacote(carrega_base(), df))
+    base = carrega_base()
+    if len(base):   # no app online não há base local (ela vem do pacote enviado): não refaz o pacote
+        ARQ_PACOTE.write_bytes(monta_pacote(base, df))
 
 
 # ------------------------------------------------------------------
@@ -327,11 +329,12 @@ def monta_pacote(base, rodadas=None, depara_bytes=None):
             z.writestr("ep_rodadas.csv", rodadas.to_csv(index=False).encode("utf-8-sig"))
         if depara_bytes:
             z.writestr("ep_depara_testes.xlsx", depara_bytes)
-        datas = pd.to_datetime(base["Data Envio"], errors="coerce")
+        datas = pd.to_datetime(base["Data Envio"], errors="coerce").dropna()
+        periodo = f"rodadas de {datas.min():%m/%Y} a {datas.max():%m/%Y}" if len(datas) else "sem rodadas"
         z.writestr("LEIA-ME.txt", (
             f"Pacote da base de EP gerado em {datetime.now():%d/%m/%Y %H:%M}.\n"
             f"{len(base)} resultado(s) ({', '.join(f'{p}: {n}' for p, n in base['Provedor'].value_counts().items())}), "
-            f"rodadas de {datas.min():%m/%Y} a {datas.max():%m/%Y}.\n"
+            f"{periodo}.\n"
             f"{0 if rodadas is None else len(rodadas)} escolha(s) de equipamento/viés/fórmula.\n"
             f"De-para de testes: {'incluído' if depara_bytes else 'NÃO incluído'}.\n\n"
             "Para usar: no app, barra lateral → \"Base de EP (.zip)\". Não descompacte.\n").encode("utf-8"))

@@ -2015,6 +2015,9 @@ with tab_ep:
             ciq_nivel = ciq_valido.loc[ciq_valido.groupby(
                 ["TesteU", "Equipamento (nome)", "Ano", "Mês", "NívelNum"])["N"].idxmax()]
             ciq_nivel = {k: g for k, g in ciq_nivel.groupby(["TesteU", "Equipamento (nome)", "Ano", "Mês"])}
+            # especificação (ETM/ESM) por teste, pra análise de tendência mesmo sem CIQ no mês da rodada
+            spec_por_teste = {t: next((s for s in g["Spec"] if isinstance(s, dict)), None)
+                              for t, g in ciq.groupby("TesteU")}
 
             def plataforma_do_provedor(nome):
                 n = str(nome or "").lower()
@@ -2082,8 +2085,24 @@ with tab_ep:
                     "- **Automático**: σ abs quando alguma amostra da rodada está no cutoff do ETM absoluto ou "
                     "abaixo (faixa em que a especificação é absoluta); senão σ %.\n\n"
                     "Com viés por **regressão** as duas fórmulas dão o mesmo resultado. Em qualquer caso, quando "
-                    "a média do CIQ do nível está no cutoff ou abaixo, vale o ETM absoluto."
+                    "a média do CIQ do nível está no cutoff ou abaixo, vale o ETM absoluto.\n\n"
+                    "**Pareamento amostra do EP × nível do CIQ** (qual CV entra no Sigma):\n"
+                    "- **Por concentração** (recomendado): cada amostra usa o nível de CIQ com média mais "
+                    "próxima do seu valor designado — o CV é o da mesma faixa em que o viés foi medido. Se o "
+                    "nível mais próximo ainda estiver longe (menos da metade ou mais do dobro), a amostra fica "
+                    "marcada: o Sigma é só indicativo, porque não há controle naquela faixa.\n"
+                    "- **Por posição** (como a planilha): amostra 1 → Nível 1, amostra 2 → Nível 2... Pode "
+                    "juntar concentrações muito diferentes (ex.: amostra de 130 com controle de 33).\n\n"
+                    "Em qualquer caso, **nenhuma amostra é descartada**: Bias %, ID e IZ são calculados para "
+                    "todas; o pareamento só decide qual CV entra no Sigma."
                 )
+            # o pareamento só decide qual CV entra no Sigma — no modo simples (sem Sigma) não aparece
+            pareamento_ep = st.radio(
+                "Pareamento amostra do EP × nível do CIQ", ep_calculo.PAREAMENTOS, horizontal=True,
+                key="ep_pareamento",
+                help="Por concentração: nível do CIQ com média mais próxima do valor designado (recomendado). "
+                     "Por posição: amostra 1 → Nível 1, amostra 2 → Nível 2 (como a planilha).",
+            ) if completo else ep_calculo.PAREAMENTOS[0]
             fe1, fe2 = st.columns(2)
             f_prov_ep = fe1.multiselect("Provedor", sorted(rodadas["Provedor"].unique()), key="ep_f_prov")
             f_teste_ep = fe2.multiselect("Teste (Infinity)", sorted(rodadas["Mneumonico"].unique()), key="ep_f_teste")
@@ -2095,6 +2114,8 @@ with tab_ep:
             opcoes_equip = [""] + sorted(df_ciq_total["Equipamento (nome)"].dropna().astype(str).unique())
             colunas_editor = ["Envio", "Provedor", "Programa", "Rodada", "Mneumonico", "Teste_prov", "Sistema",
                               "Equip_prov", "Amostras", "Equipamento", "Modo Viés", "Fórmula Sigma", "Origem"]
+            if not completo:   # sem Sigma no modo simples: a fórmula não aparece (fica a que estava)
+                colunas_editor.remove("Fórmula Sigma")
             editaveis = ("Equipamento", "Modo Viés", "Fórmula Sigma")
             editado = st.data_editor(
                 vis[colunas_editor].reset_index(drop=True), key="ep_editor", hide_index=True,
@@ -2110,7 +2131,9 @@ with tab_ep:
                                                                       options=ep_calculo.FORMULAS_SIGMA),
                 },
             )
-            escolhas_atuais = (pd.concat([salvas, editado[editado["Equipamento"] != ""][CHAVE_RODADA + list(editaveis)]],
+            if "Fórmula Sigma" not in editado.columns:
+                editado["Fórmula Sigma"] = vis["Fórmula Sigma"].to_numpy()
+            escolhas_atuais =(pd.concat([salvas, editado[editado["Equipamento"] != ""][CHAVE_RODADA + list(editaveis)]],
                                          ignore_index=True).drop_duplicates(CHAVE_RODADA, keep="last"))
             cs1, cs2 = st.columns(2)
             if cs1.button("Salvar escolhas de equipamento/viés/fórmula", key="ep_salvar_rodadas"):
@@ -2138,7 +2161,9 @@ with tab_ep:
                 g = (g.assign(_aval=g["Nota"].isin(["Acceptable", "Unacceptable"]).astype(int))
                      .sort_values("_aval", ascending=False).drop_duplicates("Especime"))
                 amostras = [{"Especime": a["Especime"], "Num": a["Num"], "RL": a["RL"] * a["Fator"],
-                             "VD": a["VD"] * a["Fator"], "Qualificador": a["Qualificador"]}
+                             "VD": a["VD"] * a["Fator"], "Qualificador": a["Qualificador"],
+                             "DP Grupo": a["DP Grupo"] * a["Fator"] if pd.notna(a["DP Grupo"]) else None,
+                             "Índice Provedor": a["SDI"] if pd.notna(a["SDI"]) else None}
                             for a in g.to_dict("records")]
                 d_envio = g["Data Envio"].iloc[0]
                 niveis = ciq_nivel.get((rd["Mneumonico"], rd["Equipamento"], d_envio.year, d_envio.month))
@@ -2148,7 +2173,9 @@ with tab_ep:
                         ciq_rodada[int(n["NívelNum"])] = {"Média": n["Média"], "CV (%)": n["CV (%)"]}
                     spec = next((s for s in niveis["Spec"] if isinstance(s, dict)), None)
                 linhas, info = ep_calculo.calcula_rodada(amostras, ciq_rodada, spec, rd["Modo Viés"] or "Médio",
-                                                         rd["Fórmula Sigma"] or "Automático")
+                                                         rd["Fórmula Sigma"] or "Automático", pareamento_ep)
+                esm_rodada = (spec or spec_por_teste.get(rd["Mneumonico"]) or {}).get("ESM (%)")
+                izs = [abs(l["IZ"]) for l in linhas if l["IZ"] is not None]
                 base_linha = {"Envio": data_extenso_ep(d_envio), "_data": d_envio, "Provedor": rd["Provedor"],
                               "Programa": rd["Programa"], "Rodada": rd["Rodada"], "Teste": rd["Mneumonico"],
                               "Sistema": rd["Sistema"], "Equipamento": rd["Equipamento"] or "—"}
@@ -2160,6 +2187,8 @@ with tab_ep:
                 resumo_res.append({**base_linha, "Viés usado": info["Modo usado"] or "—",
                                    "Fórmula usada": info["Fórmula usada"] or "—", "Equação": eq,
                                    "r": info["r"], "Viés médio (%)": info["Viés médio %"],
+                                   "Pior |IZ|": max(izs) if izs else None,
+                                   "Análise da rodada": ep_calculo.analisa_rodada(linhas, info, esm_rodada),
                                    "Pior Sigma EP": min(sigmas) if sigmas else None,
                                    "CIQ no mês": "sim" if ciq_rodada else "não",
                                    "Escolha automática": info["Motivo"], "Aviso": info["Aviso"] or ""})
@@ -2186,31 +2215,98 @@ with tab_ep:
             if res.empty:
                 st.info("Nenhum resultado para os filtros escolhidos.")
             else:
-                cols_res = ["Envio", "Provedor", "Programa", "Rodada", "Teste", "Equipamento", "Especime", "Posição",
-                            "RL", "VD", "Qualificador", "Bias % amostra"]
+                def cor_iz(v):
+                    if pd.isna(v):
+                        return ""
+                    if abs(v) > ep_calculo.LIMITE_IZ_ACAO:
+                        return "background-color: #F4CCCC"
+                    return "background-color: #FFF2CC" if abs(v) > ep_calculo.LIMITE_IZ_ALERTA else ""
+
+                # Sigma logo depois do Bias, pra não precisar rolar a tabela pro lado
+                cols_res = ["Envio", "Provedor", "Teste", "Equipamento", "Especime", "RL", "VD", "Bias % amostra",
+                            "Índice Provedor", "IZ"]
                 if completo:
-                    cols_res += ["Nível CIQ", "Média CIQ", "CV CIQ (%)", "Viés %", "Sigma EP", "Critério Sigma",
-                                 "Viés usado"]
+                    cols_res += ["Sigma EP", "Nível CIQ", "Média CIQ", "VD/Média CIQ", "Nível longe", "CV CIQ (%)",
+                                 "Viés %", "Critério Sigma", "Viés usado"]
+                cols_res += ["Programa", "Rodada", "Posição", "Qualificador"]
                 tabela_res = res[cols_res]
-                fmt = {c: "{:.2f}" for c in ["Bias % amostra", "Média CIQ", "CV CIQ (%)", "Viés %", "Sigma EP"]
-                       if c in cols_res}
-                estilo = tabela_res.style.format(fmt, na_rep="—")
+                fmt = {c: "{:.2f}" for c in ["Bias % amostra", "Índice Provedor", "IZ", "Média CIQ", "VD/Média CIQ",
+                                             "CV CIQ (%)", "Viés %", "Sigma EP"] if c in cols_res}
+                estilo = tabela_res.style.format(fmt, na_rep="—").map(cor_iz, subset=["IZ"])
                 if completo:
                     estilo = estilo.map(cor_sigma, subset=["Sigma EP"])
                 st.dataframe(estilo, hide_index=True, use_container_width=True, height=420)
+                st.caption("Índice Provedor = índice informado pelo provedor (ID do ControlLab, S.D.I. do CAP). "
+                           "IZ = (RL − VD) ÷ DP do grupo: 🟨 |IZ| > 2 questionável · 🟥 |IZ| > 3 insatisfatório."
+                           + (" \"Nível longe\" = o controle mais próximo está a menos da metade ou mais do dobro "
+                              "da concentração da amostra (Sigma indicativo)." if completo else ""))
 
                 st.markdown("**Resumo por rodada**")
-                cols_resumo = ["Envio", "Provedor", "Programa", "Rodada", "Teste", "Equipamento", "Viés usado",
-                               "Viés médio (%)", "Aviso"]
+                cols_resumo = ["Envio", "Provedor", "Teste", "Equipamento", "Viés usado", "Viés médio (%)",
+                               "Pior |IZ|", "Análise da rodada"]
                 if completo:
-                    cols_resumo[7:7] = ["Fórmula usada", "Equação", "r", "Pior Sigma EP", "CIQ no mês"]
-                    cols_resumo.insert(-1, "Escolha automática")
+                    cols_resumo += ["Pior Sigma EP", "Fórmula usada", "Equação", "r", "CIQ no mês",
+                                    "Escolha automática"]
+                cols_resumo += ["Programa", "Rodada", "Aviso"]
                 estilo_r = resumo[cols_resumo].style.format(
-                    {c: "{:.2f}" for c in ["Viés médio (%)", "Pior Sigma EP"] if c in cols_resumo} | (
-                        {"r": "{:.4f}"} if completo else {}), na_rep="—")
+                    {c: "{:.2f}" for c in ["Viés médio (%)", "Pior |IZ|", "Pior Sigma EP"] if c in cols_resumo} | (
+                        {"r": "{:.4f}"} if completo else {}), na_rep="—").map(cor_iz, subset=["Pior |IZ|"])
                 if completo:
                     estilo_r = estilo_r.map(cor_sigma, subset=["Pior Sigma EP"])
                 st.dataframe(estilo_r, hide_index=True, use_container_width=True)
+
+                # ---- Histórico do teste: tendência entre rodadas ----
+                st.divider()
+                st.markdown("**Histórico do teste — tendência entre as rodadas**")
+                testes_hist = sorted(resumo["Teste"].unique())
+                padrao_hist = str(teste_global).upper()
+                teste_hist = st.selectbox(
+                    "Teste", testes_hist, key="ep_hist_teste",
+                    index=testes_hist.index(padrao_hist) if padrao_hist in testes_hist else 0)
+                hist = resumo[resumo["Teste"] == teste_hist].sort_values("_data")
+                am_hist = res[res["Teste"] == teste_hist]
+                esm_hist = (spec_por_teste.get(teste_hist) or {}).get("ESM (%)")
+                alertas = ep_calculo.analisa_historico(
+                    [{"Rótulo": f"{r['Provedor']} {r['Envio']}", "Viés %": r["Viés médio (%)"],
+                      "Pior |IZ|": r["Pior |IZ|"]} for r in hist.to_dict("records")])
+                for alerta in alertas:
+                    grave = any(p in alerta for p in ("persistente", "piora", "investigar"))
+                    (st.warning if grave else st.info)(alerta)
+                if not alertas:
+                    st.caption("Poucas rodadas para avaliar tendência (são necessárias pelo menos 2).")
+
+                g1, g2 = st.columns(2)
+                fig_v = go.Figure()
+                for i, (prov, gp) in enumerate(am_hist.groupby("Provedor")):
+                    fig_v.add_trace(go.Scatter(
+                        x=gp["_data"], y=gp["Bias % amostra"], mode="markers", name=f"{prov} (amostra)",
+                        marker=dict(size=8, color=PALETA[(i + 2) % len(PALETA)],
+                                    symbol="circle" if prov == "ControlLab" else "diamond"),
+                        text=gp["Especime"], hovertemplate="%{x}<br>%{text}: %{y:.1f}%<extra></extra>"))
+                fig_v.add_trace(go.Scatter(x=hist["_data"], y=hist["Viés médio (%)"], mode="lines+markers",
+                                           name="Viés médio da rodada", line=dict(color=PALETA[0], width=2)))
+                fig_v.add_hline(y=0, line=dict(color="#999999", width=1))
+                if pd.notna(esm_hist):
+                    for s in (1, -1):
+                        fig_v.add_hline(y=s * esm_hist, line=dict(color="red", width=1.2, dash="dash"),
+                                        annotation_text="ESM" if s == 1 else None)
+                fig_v.update_layout(title="Viés (%) por rodada", yaxis_title="Viés (%)", height=360,
+                                    legend=dict(orientation="h", y=-0.2), margin=dict(t=40))
+                g1.plotly_chart(fig_v, use_container_width=True)
+                fig_z = go.Figure()
+                for i, (prov, gp) in enumerate(am_hist.groupby("Provedor")):
+                    fig_z.add_trace(go.Scatter(
+                        x=gp["_data"], y=gp["IZ"], mode="markers", name=prov,
+                        marker=dict(size=8, color=PALETA[(i + 2) % len(PALETA)],
+                                    symbol="circle" if prov == "ControlLab" else "diamond"),
+                        text=gp["Especime"], hovertemplate="%{x}<br>%{text}: IZ %{y:.2f}<extra></extra>"))
+                for lim, cor in ((ep_calculo.LIMITE_IZ_ALERTA, "orange"), (ep_calculo.LIMITE_IZ_ACAO, "red")):
+                    for s in (1, -1):
+                        fig_z.add_hline(y=s * lim, line=dict(color=cor, width=1.2, dash="dash"))
+                fig_z.add_hline(y=0, line=dict(color="#999999", width=1))
+                fig_z.update_layout(title="Índice Z (IZ) por amostra", yaxis_title="IZ", height=360,
+                                    legend=dict(orientation="h", y=-0.2), margin=dict(t=40))
+                g2.plotly_chart(fig_z, use_container_width=True)
 
                 fato = res.drop(columns=["_data"]).assign(**{"Ano": res["_data"].map(lambda d: d.year),
                                                               "Mês": res["_data"].map(lambda d: d.month)})
