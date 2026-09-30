@@ -8,6 +8,7 @@ Como rodar:
 """
 import io
 import json
+import os
 import re
 import zipfile
 from collections import defaultdict, Counter
@@ -1794,8 +1795,12 @@ with tab_ep:
     pdftotext_exe = ep_base.localiza_pdftotext()
 
     # ---- Importação automática das pastas configuradas (uma vez por sessão do navegador) ----
+    # No app online (Streamlit Cloud, servidor Linux fora da rede do Sabin) não há acesso às pastas
+    # da rede: a atualização por pasta só roda com o app aberto num computador Windows do Sabin.
+    app_online = os.name != "nt"
     config_ep = ep_base.carrega_config()
-    if config_ep["automatico"] and config_ep["pastas"] and not st.session_state.get("ep_sync_feito"):
+    if (not app_online and config_ep["automatico"] and config_ep["pastas"]
+            and not st.session_state.get("ep_sync_feito")):
         with st.spinner("Procurando arquivos novos de EP nas pastas configuradas..."):
             st.session_state["ep_sync_resumo"] = ep_base.sincroniza_pastas(
                 config_ep["pastas"], pdftotext=pdftotext_exe or "pdftotext")
@@ -1822,36 +1827,46 @@ with tab_ep:
                     st.write(f"- {e}")
 
     with st.expander("📁 Atualização automática por pasta"):
-        st.caption(
-            "Informe as pastas onde ficam os arquivos do CAP (PDFs \"Original Evaluation\") e do ControlLab "
-            "(CSVs ou .zip) — uma por linha; subpastas entram também. Com a importação automática ligada, "
-            "toda vez que o app é aberto ele procura arquivos novos ou alterados nessas pastas e grava na "
-            "base sozinho (o que já foi lido não é lido de novo). Para atualizar sem ninguém abrir o app, "
-            "o mesmo pode ser agendado no Windows com o comando `python ep_base.py`."
-        )
-        pastas_txt = st.text_area("Pastas de entrada", value="\n".join(config_ep["pastas"]), key="ep_pastas_cfg",
-                                  placeholder=r"D:\OneDrive - ...\EP\CAP" + "\n" + r"D:\OneDrive - ...\EP\ControlLab")
-        auto_ep = st.checkbox("Importar automaticamente ao abrir o app", value=config_ep["automatico"],
-                              key="ep_auto_cfg")
-        ca, cb = st.columns(2)
-        pastas_novas = [p.strip().strip('"') for p in pastas_txt.splitlines() if p.strip()]
-        if ca.button("Salvar configuração", key="ep_salvar_cfg"):
-            ep_base.grava_config(pastas_novas, auto_ep)
-            faltando = [p for p in pastas_novas if not Path(p).exists()]
-            if faltando:
-                st.warning("Configuração salva, mas estas pastas não foram encontradas: " + "; ".join(faltando))
-            else:
-                st.success("Configuração salva.")
-        if cb.button("Verificar as pastas agora", key="ep_sync_agora", disabled=not pastas_novas):
-            with st.spinner("Procurando arquivos novos..."):
-                st.session_state["ep_sync_resumo"] = ep_base.sincroniza_pastas(
-                    pastas_novas, pdftotext=pdftotext_exe or "pdftotext")
-            r = st.session_state["ep_sync_resumo"]
-            st.info(f"{r['verificados']} arquivo(s) verificado(s), {r['novos']} novo(s), "
-                    f"{r['ignorados']} repetido(s), {r['linhas']} resultado(s) importado(s).")
-        if ep_base.ARQ_LOG.exists():
-            st.caption("Últimas atualizações (dados_ep/ep_log.txt)")
-            st.code("".join(ep_base.ARQ_LOG.read_text(encoding="utf-8").splitlines(True)[-15:]))
+        if app_online:
+            st.info(
+                "Esta é a versão online do app: ela roda num servidor fora do Sabin e não enxerga as pastas da "
+                "rede (CAP e ControlLab). A base de EP mostrada aqui é a que foi publicada junto com o app. "
+                "A atualização automática por pasta funciona com o app aberto num computador do Sabin que "
+                "tenha acesso às pastas; aqui dá para subir CSVs do ControlLab manualmente (abaixo), mas o "
+                "que for importado online não fica guardado depois que o app reinicia."
+            )
+        else:
+            st.caption(
+                "Informe as pastas onde ficam os arquivos do CAP (PDFs \"Original Evaluation\") e do ControlLab "
+                "(CSVs ou .zip) — uma por linha; subpastas entram também. Com a importação automática ligada, "
+                "toda vez que o app é aberto ele procura arquivos novos ou alterados nessas pastas e grava na "
+                "base sozinho (o que já foi lido não é lido de novo). Para atualizar sem ninguém abrir o app, "
+                "o mesmo pode ser agendado no Windows com o comando `python ep_base.py`."
+            )
+            pastas_txt = st.text_area("Pastas de entrada", value="\n".join(config_ep["pastas"]),
+                                      key="ep_pastas_cfg",
+                                      placeholder=r"D:\OneDrive - ...\EP\CAP" + "\n" + r"D:\OneDrive - ...\EP\ControlLab")
+            auto_ep = st.checkbox("Importar automaticamente ao abrir o app", value=config_ep["automatico"],
+                                  key="ep_auto_cfg")
+            ca, cb = st.columns(2)
+            pastas_novas = [p.strip().strip('"') for p in pastas_txt.splitlines() if p.strip()]
+            if ca.button("Salvar configuração", key="ep_salvar_cfg"):
+                ep_base.grava_config(pastas_novas, auto_ep)
+                faltando = [p for p in pastas_novas if not Path(p).exists()]
+                if faltando:
+                    st.warning("Configuração salva, mas estas pastas não foram encontradas: " + "; ".join(faltando))
+                else:
+                    st.success("Configuração salva.")
+            if cb.button("Verificar as pastas agora", key="ep_sync_agora", disabled=not pastas_novas):
+                with st.spinner("Procurando arquivos novos..."):
+                    st.session_state["ep_sync_resumo"] = ep_base.sincroniza_pastas(
+                        pastas_novas, pdftotext=pdftotext_exe or "pdftotext")
+                r = st.session_state["ep_sync_resumo"]
+                st.info(f"{r['verificados']} arquivo(s) verificado(s), {r['novos']} novo(s), "
+                        f"{r['ignorados']} repetido(s), {r['linhas']} resultado(s) importado(s).")
+            if ep_base.ARQ_LOG.exists():
+                st.caption("Últimas atualizações (dados_ep/ep_log.txt)")
+                st.code("".join(ep_base.ARQ_LOG.read_text(encoding="utf-8").splitlines(True)[-15:]))
 
     with st.expander("⬆ Atualizar base de EP manualmente (subir arquivos)"):
         st.caption(
