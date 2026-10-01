@@ -233,8 +233,12 @@ def processa_entradas(entradas, hashes_conhecidos=frozenset(), pdftotext="pdftot
 # ------------------------------------------------------------------
 # Base consolidada
 # ------------------------------------------------------------------
+# "NA" é o mnemônico do sódio: o pandas, por padrão, lê "NA" (e "N/A", "NULL"...) como vazio
+SO_VAZIO_E_NA = {"keep_default_na": False, "na_values": [""]}
+
+
 def _le_base(fonte):
-    base = pd.read_csv(fonte, dtype={c: str for c in TEXTO}, encoding="utf-8-sig")
+    base = pd.read_csv(fonte, dtype={c: str for c in TEXTO}, encoding="utf-8-sig", **SO_VAZIO_E_NA)
     base["Data Envio"] = pd.to_datetime(base["Data Envio"], errors="coerce").dt.date
     for c in TEXTO:
         base[c] = base[c].fillna("") if c in base.columns else ""
@@ -265,8 +269,9 @@ def consolida(base, linhas_novas):
         ["Provedor", "Data Envio", "Programa", "Teste Provedor", "Num"], na_position="last").reset_index(drop=True)
 
 
-def grava(linhas_novas, registro_novo, arquivar_originais=True):
-    """Grava as linhas na base e registra os arquivos (e guarda os originais por ano/programa)."""
+def grava(linhas_novas, registro_novo, arquivar_originais=False):
+    """Grava as linhas na base e registra os arquivos. Os originais já ficam nas pastas de entrada (rede e
+    APP/EP_entrada); com arquivar_originais=True guarda também uma cópia por ano/programa em dados_ep/originais."""
     PASTA_DADOS.mkdir(exist_ok=True)
     base = consolida(carrega_base(), linhas_novas)
     base.to_csv(ARQ_RESULTADOS, index=False, encoding="utf-8-sig")
@@ -290,7 +295,7 @@ COLUNAS_RODADAS = ["Provedor", "Programa", "Rodada", "Mneumonico", "Sistema", "E
 
 
 def _le_rodadas(fonte):
-    df = pd.read_csv(fonte, dtype=str, encoding="utf-8-sig").fillna("")
+    df = pd.read_csv(fonte, dtype=str, encoding="utf-8-sig", **SO_VAZIO_E_NA).fillna("")
     for c in COLUNAS_RODADAS:   # arquivos gravados antes de existir a coluna "Fórmula Sigma"
         if c not in df.columns:
             df[c] = ""
@@ -438,6 +443,27 @@ def sincroniza_pastas(pastas, pdftotext="pdftotext", progresso=None):
     return resumo
 
 
+def refaz_provedor(provedor, caminhos, pdftotext="pdftotext", progresso=None):
+    """Apaga da base e do registro tudo o que veio do provedor e reimporta os caminhos — para quando
+    o leitor melhora (os arquivos já registrados seriam ignorados). Não mexe nas escolhas de
+    equipamento/viés/fórmula nem no outro provedor."""
+    base = carrega_base()
+    reg = carrega_registro()
+    PASTA_DADOS.mkdir(exist_ok=True)
+    base[base["Provedor"] != provedor].to_csv(ARQ_RESULTADOS, index=False, encoding="utf-8-sig")
+    reg[reg.get("Provedor", pd.Series("", index=reg.index)).fillna("") != provedor].to_csv(
+        ARQ_ARQUIVOS, index=False, encoding="utf-8-sig")
+    hashes = set(carrega_registro()["Hash"])
+    linhas, registro, ignorados = processa_entradas(entradas_de_caminhos(caminhos), hashes,
+                                                    pdftotext=pdftotext, progresso=progresso)
+    grava(linhas, registro)
+    resumo = {"verificados": len(registro) + ignorados, "novos": len(registro), "ignorados": ignorados,
+              "linhas": len(linhas), "erros": [f"{r['Arquivo']}: {r['Erro']}" for r in registro if r.get("Erro")],
+              "inexistentes": []}
+    registra_log(resumo)
+    return resumo
+
+
 def registra_log(resumo):
     PASTA_DADOS.mkdir(exist_ok=True)
     with ARQ_LOG.open("a", encoding="utf-8") as f:
@@ -480,6 +506,12 @@ if __name__ == "__main__":
     exe = localiza_pdftotext()
     if not exe:
         sys.exit("pdftotext não encontrado (vem com o Git for Windows).")
+    if len(sys.argv) >= 4 and sys.argv[1] == "--refazer":
+        # python ep_base.py --refazer CAP <pastas ou zips>: reimporta o provedor com o leitor atual
+        r = refaz_provedor(sys.argv[2], sys.argv[3:], pdftotext=exe)
+        print(f"{sys.argv[2]} refeito: {r['novos']} arquivo(s) lido(s), {r['ignorados']} repetido(s), "
+              f"{r['linhas']} resultado(s); {len(r['erros'])} erro(s). Base: {len(carrega_base())} linhas.")
+        sys.exit(0)
     pastas = sys.argv[1:] or carrega_config()["pastas"]
     if not pastas:
         print(__doc__)

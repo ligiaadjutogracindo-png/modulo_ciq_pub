@@ -1,6 +1,7 @@
 """
-Módulo de CIQ - Grupo Sabin
-Dashboard automático de Controle Interno da Qualidade (Infinity)
+Desempenho Analítico - Grupo Sabin
+Análise do desempenho analítico dos testes, em módulos: CIQ (exports do Infinity), EP (CAP e
+ControlLab) e, em breve, Comparabilidade (harmonização entre equipamentos).
 
 Como rodar:
     pip install streamlit pandas plotly openpyxl
@@ -24,7 +25,7 @@ import ep_calculo
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
-st.set_page_config(page_title="Módulo CIQ - Grupo Sabin", layout="wide")
+st.set_page_config(page_title="Desempenho Analítico - Grupo Sabin", layout="wide")
 # Tabelas coloridas (Styler) com vários meses de todos os testes passam do limite padrão do pandas
 pd.set_option("styler.render.max_elements", 2_000_000)
 
@@ -58,12 +59,16 @@ def _hash_arquivos_referencia():
     return "|".join(partes)
 
 
+# "NA" é o mnemônico do sódio: o pandas, por padrão, lê "NA" (e "N/A", "NULL"...) como vazio
+SO_VAZIO_E_NA = {"keep_default_na": False, "na_values": [""]}
+
+
 @st.cache_data
 def load_reference(assinatura):   # sem "_" no nome: o cache só é refeito se o parâmetro for considerado
-    df_mestre = pd.read_excel(REF_DIR / "tabela_mestre.xlsx").astype(object)
+    df_mestre = pd.read_excel(REF_DIR / "tabela_mestre.xlsx", **SO_VAZIO_E_NA).astype(object)
     mestre = df_mestre.where(pd.notna(df_mestre), None).to_dict("records")
 
-    df_bd = pd.read_excel(REF_DIR / "bd_fallback.xlsx").astype(object)
+    df_bd = pd.read_excel(REF_DIR / "bd_fallback.xlsx", **SO_VAZIO_E_NA).astype(object)
     df_bd = df_bd.where(pd.notna(df_bd), None)
     bd_fallback = {
         str(row["Mneumonico Infinity"]).strip().upper(): {
@@ -73,7 +78,7 @@ def load_reference(assinatura):   # sem "_" no nome: o cache só é refeito se o
         for _, row in df_bd.iterrows() if row["Mneumonico Infinity"]
     }
 
-    df_equip = pd.read_excel(REF_DIR / "equipamentos.xlsx").astype(object)
+    df_equip = pd.read_excel(REF_DIR / "equipamentos.xlsx", **SO_VAZIO_E_NA).astype(object)
     df_equip = df_equip.where(pd.notna(df_equip), None)
     equip_depara = {
         str(row["Equipamento"]): {
@@ -84,7 +89,7 @@ def load_reference(assinatura):   # sem "_" no nome: o cache só é refeito se o
 
     testes_excluidos_path = REF_DIR / "testes_excluidos.xlsx"
     if testes_excluidos_path.exists():
-        df_excl = pd.read_excel(testes_excluidos_path)
+        df_excl = pd.read_excel(testes_excluidos_path, **SO_VAZIO_E_NA)
         testes_excluidos = {str(t).strip().upper() for t in df_excl["Teste"].dropna()}
     else:
         testes_excluidos = set()
@@ -96,7 +101,7 @@ def load_reference(assinatura):   # sem "_" no nome: o cache só é refeito se o
     niveis_depara = {}
     niveis_path = REF_DIR / "niveis_controle.xlsx"
     if niveis_path.exists():
-        df_niv = pd.read_excel(niveis_path, dtype=str)
+        df_niv = pd.read_excel(niveis_path, dtype=str, **SO_VAZIO_E_NA)
         for _, row in df_niv.iterrows():
             controle, nivel = row.get("Controle"), row.get("Nível")
             if pd.isna(controle) or pd.isna(nivel):
@@ -224,7 +229,7 @@ def parse_zip(zip_bytes):
                 raw = z.read(name).decode("utf-8-sig")
             except UnicodeDecodeError:
                 raw = z.read(name).decode("latin-1")
-            reader = pd.read_csv(io.StringIO(raw), sep=";", dtype=str)
+            reader = pd.read_csv(io.StringIO(raw), sep=";", dtype=str, **SO_VAZIO_E_NA)
             for _, row in reader.iterrows():
                 teste = (row.get("Teste") or "").strip() if pd.notna(row.get("Teste")) else ""
                 if not teste:
@@ -640,8 +645,8 @@ def calcula_sigma_periodos_df(df_filtrado):
 # ============================================================
 # UI
 # ============================================================
-st.title("Módulo de CIQ — Controle Interno da Qualidade")
-st.caption("Grupo Sabin · Análise automática dos exports do Infinity")
+st.title("Desempenho Analítico")
+st.caption("Grupo Sabin · Módulos: CIQ (Infinity) · EP (CAP e ControlLab) · Comparabilidade (em breve)")
 
 mestre_by_mneu, bd_fallback, equip_depara, testes_excluidos, niveis_depara = load_reference(
     _hash_arquivos_referencia())
@@ -787,7 +792,7 @@ df["_ordem_tempo"] = df["Ano"] * 12 + df["Mês"]
 df_ciq_total = df.copy()
 
 with st.sidebar:
-    st.header("Filtros globais (afetam todas as abas)")
+    st.header("Filtros globais (valem para todos os módulos)")
     meses_ordenados_global = (df[["Ano", "Mês", "Mês/Ano"]].drop_duplicates()
                                .sort_values(["Ano", "Mês"])["Mês/Ano"].tolist())
     f_periodo_global = st.select_slider(
@@ -884,23 +889,37 @@ def card_pior_cenario(df_teste, coluna_valor, nome_metrica, usa_abs=False, maior
 with st.sidebar:
     st.header("Teste em foco")
     teste_global = st.selectbox(
-        "Usado nas abas Tendência, Bias e Erro Total",
+        "Usado nas análises por teste (CV, Bias, Erro Total, Sigma e EP)",
         testes_disponiveis, key="teste_global",
     )
 
-nomes_abas = ["📊 Dashboard", "📉 CV", "🎯 Bias", "⚠ Erro Total", "📋 Resultados Mensais", "🧪 EP"]
+# Três módulos, cada um com as suas análises em abas. Os blocos abaixo escrevem direto na aba de
+# destino ("with tab_x:"), então a ordem do código não precisa seguir a ordem das abas.
+mod_ciq, mod_ep, mod_comp = st.tabs(["🧫 Módulo CIQ", "🧪 Módulo EP", "⚖️ Comparabilidade"])
+nomes_abas = ["📊 Dashboard", "📉 CV", "🎯 Bias", "⚠ Erro Total", "📋 Resultados Mensais"]
 if completo:
     nomes_abas.append("🗓 Sigma por Período")
-abas = st.tabs(nomes_abas)
-tab_dash, tab_grafico, tab_bias, tab_et, tab_tabela, tab_ep = abas[:6]
-tab_periodo = abas[6] if completo else None
+with mod_ciq:
+    st.caption("Controle Interno da Qualidade — exports mensais do Infinity.")
+    abas = st.tabs(nomes_abas)
+tab_dash, tab_grafico, tab_bias, tab_et, tab_tabela = abas[:5]
+tab_periodo = abas[5] if completo else None
+tab_ep = mod_ep
+
+with mod_comp:
+    st.subheader("Comparabilidade — harmonização entre equipamentos")
+    st.info(
+        "Em construção. Este módulo vai comparar o mesmo teste entre os equipamentos que o realizam "
+        "(harmonização). O export do Infinity já traz os controles de comparabilidade (\"COMP...\"), "
+        "que hoje ficam fora do CIQ — eles serão a base deste módulo."
+    )
 
 # ---------------- DASHBOARD ----------------
 with tab_dash:
     st.subheader("Visão geral — piores cenários (CV, Bias e Erro Total)")
     st.caption(
         "Considera os filtros globais da barra lateral (Período e Módulo/Plataforma). "
-        "Pra investigar um teste específico em detalhe, use as abas Tendência/Comparação, "
+        "Pra investigar um teste específico em detalhe, use as abas CV, "
         "Bias ou Erro Total."
     )
 
@@ -1767,7 +1786,7 @@ def carrega_depara_ep(assinatura, conteudo=None):
                "Fator", "Confiança", "Observação"]
     if conteudo is None and not ARQ_DEPARA_EP.exists():
         return pd.DataFrame(columns=colunas)
-    d = pd.read_excel(io.BytesIO(conteudo) if conteudo is not None else ARQ_DEPARA_EP, dtype=str)
+    d = pd.read_excel(io.BytesIO(conteudo) if conteudo is not None else ARQ_DEPARA_EP, dtype=str, **SO_VAZIO_E_NA)
     for c in colunas:
         if c not in d.columns:
             d[c] = ""
@@ -1794,11 +1813,15 @@ def data_extenso_ep(d):
 with tab_ep:
     st.subheader("Ensaio de Proficiência (EP) — CAP e ControlLab")
     st.caption(
-        "O EP usa o CV e a Média do CIQ do equipamento informado, no mês da rodada: a amostra 1 "
-        "usa o Nível 1 do CIQ, a amostra 2 o Nível 2, e assim por diante (como a planilha). "
-        "O período da barra lateral também filtra as rodadas daqui."
+        "O EP usa o CV e a Média do CIQ do equipamento informado, no mês da rodada: cada amostra é "
+        "comparada com o nível do CIQ de concentração mais próxima"
+        + (" (ou por posição, como a planilha — escolha em \"Pareamento\", na aba Rodadas e resultados). " if completo else ". ")
+        + "O período da barra lateral também filtra as rodadas daqui."
         + ("" if completo else " No modo simples aparece só o Bias do EP, sem Sigma.")
     )
+    avisos_ep = st.container()   # avisos gerais do EP, acima das abas internas
+    ep_tab_res, ep_tab_hist, ep_tab_base = st.tabs(
+        ["📋 Rodadas e resultados", "📈 Histórico do teste", "⚙️ Base e de-para"])
 
     # ---- 1. Atualizar a base ----
     pdftotext_exe = ep_base.localiza_pdftotext()
@@ -1808,8 +1831,9 @@ with tab_ep:
     # da rede: a atualização por pasta só roda com o app aberto num computador Windows do Sabin.
     app_online = os.name != "nt"
     if app_online and pacote_ep is None:
-        st.info("📦 Para ver a base de EP, suba o **pacote_ep.zip** no campo **\"Base de EP (.zip)\"** da "
-                "barra lateral (à esquerda, logo abaixo do zip do CIQ).")
+        with avisos_ep:
+            st.info("📦 Para ver a base de EP, suba o **pacote_ep.zip** no campo **\"Base de EP (.zip)\"** da "
+                    "barra lateral (à esquerda, logo abaixo do zip do CIQ).")
     config_ep = ep_base.carrega_config()
     if (not app_online and config_ep["automatico"] and config_ep["pastas"]
             and not st.session_state.get("ep_sync_feito")):
@@ -1817,133 +1841,134 @@ with tab_ep:
             st.session_state["ep_sync_resumo"] = ep_base.sincroniza_pastas(
                 config_ep["pastas"], pdftotext=pdftotext_exe or "pdftotext")
         st.session_state["ep_sync_feito"] = True
-    resumo_sync = st.session_state.get("ep_sync_resumo")
-    if resumo_sync:
-        if resumo_sync["novos"]:
-            st.success(f"Atualização automática: {resumo_sync['novos']} arquivo(s) novo(s), "
-                       f"{resumo_sync['linhas']} resultado(s) importado(s) das pastas configuradas.")
-        if resumo_sync["inexistentes"] and len(resumo_sync["inexistentes"]) == len(config_ep["pastas"]):
-            # computador sem acesso às pastas: usa a base já atualizada (sincronizada pelo OneDrive)
-            ultima = ""
-            if ep_base.ARQ_LOG.exists():
-                linhas_log = [l for l in ep_base.ARQ_LOG.read_text(encoding="utf-8").splitlines() if l[:1].isdigit()]
-                ultima = f" Última atualização da base: {linhas_log[-1][:16].replace('T', ' às ')}." if linhas_log else ""
-            st.info("As pastas de EP configuradas não estão acessíveis deste computador — os dados mostrados "
-                    f"são os da última atualização feita num computador com acesso.{ultima}")
-        else:
-            for p in resumo_sync["inexistentes"]:
-                st.warning(f"Pasta de EP não encontrada: {p}")
-        if resumo_sync["erros"]:
-            with st.expander(f"⚠ {len(resumo_sync['erros'])} arquivo(s) de EP não puderam ser lidos"):
-                for e in resumo_sync["erros"]:
-                    st.write(f"- {e}")
+    with ep_tab_base:
+        resumo_sync = st.session_state.get("ep_sync_resumo")
+        if resumo_sync:
+            if resumo_sync["novos"]:
+                st.success(f"Atualização automática: {resumo_sync['novos']} arquivo(s) novo(s), "
+                           f"{resumo_sync['linhas']} resultado(s) importado(s) das pastas configuradas.")
+            if resumo_sync["inexistentes"] and len(resumo_sync["inexistentes"]) == len(config_ep["pastas"]):
+                # computador sem acesso às pastas: usa a base já atualizada (sincronizada pelo OneDrive)
+                ultima = ""
+                if ep_base.ARQ_LOG.exists():
+                    linhas_log = [l for l in ep_base.ARQ_LOG.read_text(encoding="utf-8").splitlines() if l[:1].isdigit()]
+                    ultima = f" Última atualização da base: {linhas_log[-1][:16].replace('T', ' às ')}." if linhas_log else ""
+                st.info("As pastas de EP configuradas não estão acessíveis deste computador — os dados mostrados "
+                        f"são os da última atualização feita num computador com acesso.{ultima}")
+            else:
+                for p in resumo_sync["inexistentes"]:
+                    st.warning(f"Pasta de EP não encontrada: {p}")
+            if resumo_sync["erros"]:
+                with st.expander(f"⚠ {len(resumo_sync['erros'])} arquivo(s) de EP não puderam ser lidos"):
+                    for e in resumo_sync["erros"]:
+                        st.write(f"- {e}")
 
-    with st.expander("📁 Atualização automática por pasta"):
-        if app_online:
-            st.info(
-                "Esta é a versão online do app: ela roda num servidor fora do Sabin e não enxerga as pastas da "
-                "rede (CAP e ControlLab). A base de EP mostrada aqui é a que foi publicada junto com o app. "
-                "A atualização automática por pasta funciona com o app aberto num computador do Sabin que "
-                "tenha acesso às pastas; aqui dá para subir CSVs do ControlLab manualmente (abaixo), mas o "
-                "que for importado online não fica guardado depois que o app reinicia."
-            )
-        else:
+        with st.expander("📁 Atualização automática por pasta"):
+            if app_online:
+                st.info(
+                    "Esta é a versão online do app: ela roda num servidor fora do Sabin e não enxerga as pastas da "
+                    "rede (CAP e ControlLab). A base de EP mostrada aqui é a que foi publicada junto com o app. "
+                    "A atualização automática por pasta funciona com o app aberto num computador do Sabin que "
+                    "tenha acesso às pastas; aqui dá para subir CSVs do ControlLab manualmente (abaixo), mas o "
+                    "que for importado online não fica guardado depois que o app reinicia."
+                )
+            else:
+                st.caption(
+                    "Informe as pastas onde ficam os arquivos do CAP (PDFs \"Original Evaluation\") e do ControlLab "
+                    "(CSVs ou .zip) — uma por linha; subpastas entram também. Com a importação automática ligada, "
+                    "toda vez que o app é aberto ele procura arquivos novos ou alterados nessas pastas e grava na "
+                    "base sozinho (o que já foi lido não é lido de novo). Para atualizar sem ninguém abrir o app, "
+                    "o mesmo pode ser agendado no Windows com o comando `python ep_base.py`."
+                )
+                pastas_txt = st.text_area("Pastas de entrada", value="\n".join(config_ep["pastas"]),
+                                          key="ep_pastas_cfg",
+                                          placeholder=r"D:\OneDrive - ...\EP\CAP" + "\n" + r"D:\OneDrive - ...\EP\ControlLab")
+                auto_ep = st.checkbox("Importar automaticamente ao abrir o app", value=config_ep["automatico"],
+                                      key="ep_auto_cfg")
+                ca, cb = st.columns(2)
+                pastas_novas = [p.strip().strip('"') for p in pastas_txt.splitlines() if p.strip()]
+                if ca.button("Salvar configuração", key="ep_salvar_cfg"):
+                    ep_base.grava_config(pastas_novas, auto_ep)
+                    faltando = [p for p in pastas_novas if not Path(p).exists()]
+                    if faltando:
+                        st.warning("Configuração salva, mas estas pastas não foram encontradas: " + "; ".join(faltando))
+                    else:
+                        st.success("Configuração salva.")
+                if cb.button("Verificar as pastas agora", key="ep_sync_agora", disabled=not pastas_novas):
+                    with st.spinner("Procurando arquivos novos..."):
+                        st.session_state["ep_sync_resumo"] = ep_base.sincroniza_pastas(
+                            pastas_novas, pdftotext=pdftotext_exe or "pdftotext")
+                    r = st.session_state["ep_sync_resumo"]
+                    st.info(f"{r['verificados']} arquivo(s) verificado(s), {r['novos']} novo(s), "
+                            f"{r['ignorados']} repetido(s), {r['linhas']} resultado(s) importado(s).")
+                if ep_base.ARQ_LOG.exists():
+                    st.caption("Últimas atualizações (dados_ep/ep_log.txt)")
+                    st.code("".join(ep_base.ARQ_LOG.read_text(encoding="utf-8").splitlines(True)[-15:]))
+
+        with st.expander("⬆ Atualizar base de EP manualmente (subir arquivos)"):
             st.caption(
-                "Informe as pastas onde ficam os arquivos do CAP (PDFs \"Original Evaluation\") e do ControlLab "
-                "(CSVs ou .zip) — uma por linha; subpastas entram também. Com a importação automática ligada, "
-                "toda vez que o app é aberto ele procura arquivos novos ou alterados nessas pastas e grava na "
-                "base sozinho (o que já foi lido não é lido de novo). Para atualizar sem ninguém abrir o app, "
-                "o mesmo pode ser agendado no Windows com o comando `python ep_base.py`."
+                "PDFs \"Original Evaluation\" do CAP, CSVs de avaliação do ControlLab ou um .zip com eles. "
+                "Arquivos já processados são reconhecidos e ignorados (não duplicam). Para uma carga grande, "
+                "informe a pasta em vez de subir os arquivos. No ControlLab entram só os resultados do(s) "
+                f"laboratório(s) {', '.join(sorted(ep_base.PARTICIPANTES_CONTROLLAB))}."
             )
-            pastas_txt = st.text_area("Pastas de entrada", value="\n".join(config_ep["pastas"]),
-                                      key="ep_pastas_cfg",
-                                      placeholder=r"D:\OneDrive - ...\EP\CAP" + "\n" + r"D:\OneDrive - ...\EP\ControlLab")
-            auto_ep = st.checkbox("Importar automaticamente ao abrir o app", value=config_ep["automatico"],
-                                  key="ep_auto_cfg")
-            ca, cb = st.columns(2)
-            pastas_novas = [p.strip().strip('"') for p in pastas_txt.splitlines() if p.strip()]
-            if ca.button("Salvar configuração", key="ep_salvar_cfg"):
-                ep_base.grava_config(pastas_novas, auto_ep)
-                faltando = [p for p in pastas_novas if not Path(p).exists()]
-                if faltando:
-                    st.warning("Configuração salva, mas estas pastas não foram encontradas: " + "; ".join(faltando))
-                else:
-                    st.success("Configuração salva.")
-            if cb.button("Verificar as pastas agora", key="ep_sync_agora", disabled=not pastas_novas):
-                with st.spinner("Procurando arquivos novos..."):
-                    st.session_state["ep_sync_resumo"] = ep_base.sincroniza_pastas(
-                        pastas_novas, pdftotext=pdftotext_exe or "pdftotext")
-                r = st.session_state["ep_sync_resumo"]
-                st.info(f"{r['verificados']} arquivo(s) verificado(s), {r['novos']} novo(s), "
-                        f"{r['ignorados']} repetido(s), {r['linhas']} resultado(s) importado(s).")
-            if ep_base.ARQ_LOG.exists():
-                st.caption("Últimas atualizações (dados_ep/ep_log.txt)")
-                st.code("".join(ep_base.ARQ_LOG.read_text(encoding="utf-8").splitlines(True)[-15:]))
+            if not pdftotext_exe:
+                st.warning("Leitor de PDF do CAP indisponível aqui (precisa do pdftotext do Git for Windows, que não "
+                           "existe no app online) — os PDFs do CAP não serão lidos; os CSVs do ControlLab funcionam.")
+            arquivos_ep = st.file_uploader("Arquivos", type=["pdf", "csv", "zip"], accept_multiple_files=True,
+                                           key="ep_upload")
+            pasta_ep = st.text_input("…ou uma pasta (ou .zip) do computador", key="ep_pasta",
+                                     placeholder=r"D:\Ligia\EP_entrada")
+            if st.button("Ler arquivos", key="ep_ler"):
+                entradas = []
+                for f in (arquivos_ep or []):
+                    conteudo = f.getvalue()
+                    if f.name.lower().endswith(".zip"):
+                        try:
+                            eh_pacote = any(Path(n).name == "ep_resultados.csv"
+                                            for n in zipfile.ZipFile(io.BytesIO(conteudo)).namelist())
+                        except zipfile.BadZipFile:
+                            eh_pacote = False
+                        if eh_pacote:
+                            st.warning(f"\"{f.name}\" é um pacote de EP — suba-o no campo \"Base de EP (.zip)\" da "
+                                       "barra lateral (à esquerda), não aqui.")
+                            continue
+                    entradas.append((f.name, conteudo))
+                if pasta_ep.strip():
+                    if Path(pasta_ep.strip()).exists():
+                        entradas = [*entradas, *ep_base.entradas_de_caminhos([pasta_ep.strip()])]
+                    else:
+                        st.error(f"Pasta não encontrada: {pasta_ep}")
+                hashes = set(ep_base.carrega_registro()["Hash"])
+                barra = st.progress(0.0, text="Lendo arquivos...")
+                linhas_ep, registro_ep, ignorados_ep = ep_base.processa_entradas(
+                    entradas, hashes, pdftotext=pdftotext_exe or "pdftotext",
+                    progresso=lambda n: barra.progress(min(1.0, n / max(len(entradas), 1)),
+                                                       text=f"{n} arquivo(s) lido(s)..."))
+                barra.empty()
+                st.session_state["ep_pendente"] = (linhas_ep, registro_ep, ignorados_ep)
 
-    with st.expander("⬆ Atualizar base de EP manualmente (subir arquivos)"):
-        st.caption(
-            "PDFs \"Original Evaluation\" do CAP, CSVs de avaliação do ControlLab ou um .zip com eles. "
-            "Arquivos já processados são reconhecidos e ignorados (não duplicam). Para uma carga grande, "
-            "informe a pasta em vez de subir os arquivos. No ControlLab entram só os resultados do(s) "
-            f"laboratório(s) {', '.join(sorted(ep_base.PARTICIPANTES_CONTROLLAB))}."
-        )
-        if not pdftotext_exe:
-            st.warning("Leitor de PDF do CAP indisponível aqui (precisa do pdftotext do Git for Windows, que não "
-                       "existe no app online) — os PDFs do CAP não serão lidos; os CSVs do ControlLab funcionam.")
-        arquivos_ep = st.file_uploader("Arquivos", type=["pdf", "csv", "zip"], accept_multiple_files=True,
-                                       key="ep_upload")
-        pasta_ep = st.text_input("…ou uma pasta (ou .zip) do computador", key="ep_pasta",
-                                 placeholder=r"D:\Ligia\EP_entrada")
-        if st.button("Ler arquivos", key="ep_ler"):
-            entradas = []
-            for f in (arquivos_ep or []):
-                conteudo = f.getvalue()
-                if f.name.lower().endswith(".zip"):
-                    try:
-                        eh_pacote = any(Path(n).name == "ep_resultados.csv"
-                                        for n in zipfile.ZipFile(io.BytesIO(conteudo)).namelist())
-                    except zipfile.BadZipFile:
-                        eh_pacote = False
-                    if eh_pacote:
-                        st.warning(f"\"{f.name}\" é um pacote de EP — suba-o no campo \"Base de EP (.zip)\" da "
-                                   "barra lateral (à esquerda), não aqui.")
-                        continue
-                entradas.append((f.name, conteudo))
-            if pasta_ep.strip():
-                if Path(pasta_ep.strip()).exists():
-                    entradas = [*entradas, *ep_base.entradas_de_caminhos([pasta_ep.strip()])]
-                else:
-                    st.error(f"Pasta não encontrada: {pasta_ep}")
-            hashes = set(ep_base.carrega_registro()["Hash"])
-            barra = st.progress(0.0, text="Lendo arquivos...")
-            linhas_ep, registro_ep, ignorados_ep = ep_base.processa_entradas(
-                entradas, hashes, pdftotext=pdftotext_exe or "pdftotext",
-                progresso=lambda n: barra.progress(min(1.0, n / max(len(entradas), 1)),
-                                                   text=f"{n} arquivo(s) lido(s)..."))
-            barra.empty()
-            st.session_state["ep_pendente"] = (linhas_ep, registro_ep, ignorados_ep)
-
-        pendente = st.session_state.get("ep_pendente")
-        if pendente:
-            linhas_ep, registro_ep, ignorados_ep = pendente
-            st.info(f"{len(registro_ep)} arquivo(s) novo(s), {ignorados_ep} já processado(s) antes · "
-                    f"{len(linhas_ep)} resultado(s) quantitativo(s) lido(s).")
-            if linhas_ep:
-                prev = pd.DataFrame(linhas_ep)
-                st.dataframe(prev.groupby(["Provedor", "Programa"]).agg(
-                    Rodadas=("Rodada", "nunique"), Resultados=("RL", "size")).reset_index(),
-                    hide_index=True, use_container_width=True)
-                if st.checkbox("Mostrar prévia das linhas lidas", key="ep_ver_previa"):
-                    st.dataframe(prev.head(500), hide_index=True, use_container_width=True)
-            c_g, c_d = st.columns(2)
-            if c_g.button("Gravar na base de EP", type="primary", key="ep_gravar"):
-                ep_base.grava(linhas_ep, registro_ep)
-                del st.session_state["ep_pendente"]
-                st.success("Base de EP atualizada.")
-                st.rerun()
-            if c_d.button("Descartar", key="ep_descartar"):
-                del st.session_state["ep_pendente"]
-                st.rerun()
+            pendente = st.session_state.get("ep_pendente")
+            if pendente:
+                linhas_ep, registro_ep, ignorados_ep = pendente
+                st.info(f"{len(registro_ep)} arquivo(s) novo(s), {ignorados_ep} já processado(s) antes · "
+                        f"{len(linhas_ep)} resultado(s) quantitativo(s) lido(s).")
+                if linhas_ep:
+                    prev = pd.DataFrame(linhas_ep)
+                    st.dataframe(prev.groupby(["Provedor", "Programa"]).agg(
+                        Rodadas=("Rodada", "nunique"), Resultados=("RL", "size")).reset_index(),
+                        hide_index=True, use_container_width=True)
+                    if st.checkbox("Mostrar prévia das linhas lidas", key="ep_ver_previa"):
+                        st.dataframe(prev.head(500), hide_index=True, use_container_width=True)
+                c_g, c_d = st.columns(2)
+                if c_g.button("Gravar na base de EP", type="primary", key="ep_gravar"):
+                    ep_base.grava(linhas_ep, registro_ep)
+                    del st.session_state["ep_pendente"]
+                    st.success("Base de EP atualizada.")
+                    st.rerun()
+                if c_d.button("Descartar", key="ep_descartar"):
+                    del st.session_state["ep_pendente"]
+                    st.rerun()
 
     # base de EP: pacote enviado na barra lateral + o que houver na base local (sem duplicar)
     rodadas_pacote = depara_pacote = None
@@ -1953,19 +1978,23 @@ with tab_ep:
             base_pacote, rodadas_pacote, depara_pacote = ep_base.le_pacote(pacote_ep.getvalue())
             base_ep = (ep_base.consolida(base_pacote, base_ep.to_dict("records")) if len(base_ep)
                        else base_pacote)
-            st.caption(f"📦 Base de EP do pacote enviado ({pacote_ep.name}): {len(base_pacote)} resultado(s)"
-                       + (f"; {len(base_ep)} ao juntar com a base local." if len(base_ep) != len(base_pacote) else "."))
+            with ep_tab_base:
+                st.caption(f"📦 Base de EP do pacote enviado ({pacote_ep.name}): {len(base_pacote)} resultado(s)"
+                           + (f"; {len(base_ep)} ao juntar com a base local." if len(base_ep) != len(base_pacote) else "."))
         except (ValueError, zipfile.BadZipFile) as e:
-            st.error(f"Não foi possível usar o pacote de EP: {e}")
+            with avisos_ep:
+                st.error(f"Não foi possível usar o pacote de EP: {e}")
     # de-para: o que veio no pacote tem prioridade (o app online não depende do arquivo no GitHub)
     depara_ep = carrega_depara_ep(_mtime(ARQ_DEPARA_EP), depara_pacote)
     if depara_ep.empty and not base_ep.empty:
-        st.warning("De-para de testes não encontrado (nem no pacote de EP, nem em "
-                   "reference_data/ep_depara_testes.xlsx) — sem ele nenhum teste do EP é correlacionado com o "
-                   "Infinity. Gere o pacote de novo num computador que tenha o de-para (ele vai junto).")
+        with avisos_ep:
+            st.warning("De-para de testes não encontrado (nem no pacote de EP, nem em "
+                       "reference_data/ep_depara_testes.xlsx) — sem ele nenhum teste do EP é correlacionado com o "
+                       "Infinity. Gere o pacote de novo num computador que tenha o de-para (ele vai junto).")
     if base_ep.empty:
-        st.info("A base de EP ainda está vazia — suba o pacote de EP na barra lateral ou use "
-                "\"Atualizar base de EP\" acima.")
+        with avisos_ep:
+            st.info("A base de EP ainda está vazia — suba o pacote de EP na barra lateral ou use "
+                    "a aba ⚙️ Base e de-para.")
     else:
         b = base_ep.copy()
         b["Módulo/Programa"] = b["Programa"].where(b["Provedor"] != "CAP",
@@ -1978,293 +2007,309 @@ with tab_ep:
         b["Mês/Ano"] = b["Data Envio"].map(mes_ano_curto)
         b = b[b["Mês/Ano"].isin(periodo_valido_g)]
 
-        # ---- 2. Situação do de-para ----
-        sem_depara = (b[b["Confiança"].isna()]
-                      .groupby(["Provedor", "Módulo/Programa", "Teste Provedor", "Unidade"])
-                      .size().reset_index(name="Resultados"))
-        duvidas = depara_ep[depara_ep["Confiança"] == "dúvida"]
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Rodadas com teste correlacionado", b[b["Mneumonico"] != ""].groupby(
-            ["Provedor", "Programa", "Rodada", "Mneumonico", "Sistema"]).ngroups)
-        m2.metric("Testes sem de-para no período", len(sem_depara))
-        m3.metric("Dúvidas no de-para", len(duvidas))
-        if len(sem_depara) or len(duvidas):
-            with st.expander("Ver testes sem de-para e dúvidas"):
-                st.caption(
-                    "O de-para fica em `reference_data/ep_depara_testes.xlsx` (colunas Mneumonico Infinity e "
-                    "Fator). Edite, salve e recarregue o app. Teste sem mnemônico não entra no cálculo."
-                )
-                if len(sem_depara):
-                    st.markdown("**Testes do EP que ainda não estão no de-para**")
-                    st.dataframe(sem_depara, hide_index=True, use_container_width=True)
-                if len(duvidas):
-                    st.markdown("**Correlações marcadas como dúvida**")
-                    st.dataframe(duvidas[["Provedor", "Módulo/Programa", "Teste Provedor", "Mneumonico Infinity",
-                                          "Fator", "Observação"]], hide_index=True, use_container_width=True)
+        with ep_tab_base:
+            # ---- 2. Situação do de-para ----
+            sem_depara = (b[b["Confiança"].isna()]
+                          .groupby(["Provedor", "Módulo/Programa", "Teste Provedor", "Unidade"])
+                          .size().reset_index(name="Resultados"))
+            duvidas = depara_ep[depara_ep["Confiança"] == "dúvida"]
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Rodadas com teste correlacionado", b[b["Mneumonico"] != ""].groupby(
+                ["Provedor", "Programa", "Rodada", "Mneumonico", "Sistema"]).ngroups)
+            m2.metric("Testes sem de-para no período", len(sem_depara))
+            m3.metric("Dúvidas no de-para", len(duvidas))
+            if len(sem_depara) or len(duvidas):
+                with st.expander("Ver testes sem de-para e dúvidas"):
+                    st.caption(
+                        "O de-para fica em `reference_data/ep_depara_testes.xlsx` (colunas Mneumonico Infinity e "
+                        "Fator). Edite, salve e recarregue o app. Teste sem mnemônico não entra no cálculo."
+                    )
+                    if len(sem_depara):
+                        st.markdown("**Testes do EP que ainda não estão no de-para**")
+                        st.dataframe(sem_depara, hide_index=True, use_container_width=True)
+                    if len(duvidas):
+                        st.markdown("**Correlações marcadas como dúvida**")
+                        st.dataframe(duvidas[["Provedor", "Módulo/Programa", "Teste Provedor", "Mneumonico Infinity",
+                                              "Fator", "Observação"]], hide_index=True, use_container_width=True)
 
-        # ---- 3. Rodadas × equipamento ----
-        mapeado = b[b["Mneumonico"] != ""].copy()
-        if mapeado.empty:
-            st.info("Nenhuma rodada com teste correlacionado no período selecionado.")
-        else:
-            ciq = df_ciq_total.copy()
-            ciq["TesteU"] = ciq["Teste"].str.upper()
-            ciq["N"] = ciq["N"].fillna(0)
-            ciq_por_teste = {t: g for t, g in ciq.groupby("TesteU")}
-            ciq_valido = ciq.dropna(subset=["CV (%)", "Média", "NívelNum"])
-            ciq_nivel = ciq_valido.loc[ciq_valido.groupby(
-                ["TesteU", "Equipamento (nome)", "Ano", "Mês", "NívelNum"])["N"].idxmax()]
-            ciq_nivel = {k: g for k, g in ciq_nivel.groupby(["TesteU", "Equipamento (nome)", "Ano", "Mês"])}
-            # especificação (ETM/ESM) por teste, pra análise de tendência mesmo sem CIQ no mês da rodada
-            spec_por_teste = {t: next((s for s in g["Spec"] if isinstance(s, dict)), None)
-                              for t, g in ciq.groupby("TesteU")}
-
-            def plataforma_do_provedor(nome):
-                n = str(nome or "").lower()
-                return next((tipo for chave, tipo in PLATAFORMA_EP if chave in n), None)
-
-            def sugere_equipamento(mneu, d_envio, equip_prov):
-                cand = ciq_por_teste.get(mneu)
-                if cand is None or cand.empty:
-                    return ""
-                tipo = plataforma_do_provedor(equip_prov)
-                if tipo:
-                    mesma_plat = cand[cand["Tipo"].astype(str).str.upper() == tipo]
-                    cand = mesma_plat if not mesma_plat.empty else cand
-                no_mes = cand[(cand["Ano"] == d_envio.year) & (cand["Mês"] == d_envio.month)]
-                cand = no_mes if not no_mes.empty else cand
-                return cand.groupby("Equipamento (nome)")["N"].sum().idxmax()
-
-            rodadas = (mapeado.groupby(CHAVE_RODADA).agg(
-                Data=("Data Envio", "min"),
-                Teste_prov=("Teste Provedor", lambda s: "; ".join(sorted(set(s)))),
-                Equip_prov=("Equipamento Provedor", lambda s: "; ".join(sorted({x for x in s if x}))),
-                Amostras=("Especime", "nunique")).reset_index())
-            salvas = ep_base.carrega_rodadas()
-            if rodadas_pacote is not None:
-                # escolhas que vieram no pacote; as salvas nesta sessão (arquivo local) valem por cima
-                salvas = (pd.concat([rodadas_pacote, salvas], ignore_index=True)
-                          .drop_duplicates(CHAVE_RODADA, keep="last"))
-            rodadas = rodadas.merge(salvas, how="left", on=CHAVE_RODADA)
-            rodadas["Equipamento"] = rodadas["Equipamento"].fillna("")
-            rodadas["Origem"] = rodadas["Equipamento"].map(lambda e: "salvo" if e else "")
-            faltam = rodadas["Equipamento"] == ""
-            rodadas.loc[faltam, "Equipamento"] = [
-                sugere_equipamento(r.Mneumonico, r.Data, r.Equip_prov) for r in rodadas[faltam].itertuples()]
-            rodadas.loc[faltam & (rodadas["Equipamento"] != ""), "Origem"] = "sugerido"
-            rodadas["Modo Viés"] = rodadas["Modo Viés"].fillna("").replace("", "Médio")
-            rodadas["Fórmula Sigma"] = rodadas["Fórmula Sigma"].fillna("").replace("", "Automático")
-            rodadas["Envio"] = rodadas["Data"].map(data_extenso_ep)
-            rodadas = rodadas.sort_values(["Data", "Provedor", "Programa", "Mneumonico"], ascending=[False, True, True, True])
-
-            st.divider()
-            st.markdown("**Rodadas e equipamento**")
-            st.caption(
-                "Os relatórios não dizem em qual equipamento a amostra foi analisada: escolha o equipamento "
-                "(o S.A. da planilha), o viés e a fórmula do Sigma de cada rodada. \"sugerido\" = escolhido pelo "
-                "app (no ControlLab, pelo equipamento que o próprio arquivo informa; no CAP, o de maior volume de "
-                "CIQ no mês). Clique em Salvar para gravar as escolhas."
-            )
-            with st.expander("ℹ Como escolher o viés e a fórmula do Sigma"):
-                st.markdown(
-                    "**Viés da rodada** — quanto o laboratório se afasta do valor designado:\n"
-                    "- **Médio**: diferença entre a média dos resultados do laboratório e a média dos valores "
-                    "designados. Um viés só, aplicado igual a todos os níveis do CIQ. Bom quando as amostras da "
-                    "rodada têm concentrações parecidas.\n"
-                    "- **Regressão**: reta RL = b × VD + a com as amostras da rodada; o viés é lido na "
-                    "concentração de cada nível do CIQ. Melhor quando as amostras têm concentrações bem "
-                    "diferentes, porque o viés pode mudar com a concentração (ex.: é pequeno no nível baixo e "
-                    "grande no alto). Precisa de amostras com boa correlação (r próximo de 1).\n"
-                    f"- **Automático**: usa regressão quando a maior concentração da rodada é pelo menos "
-                    f"{ep_calculo.RAZAO_CONCENTRACAO_REGRESSAO:g}× a menor, há 3 amostras ou mais e "
-                    f"r ≥ {ep_calculo.R_MINIMO_REGRESSAO:g}; senão, viés médio.\n\n"
-                    "**Fórmula do Sigma** (lista \"σ abs / σ %\" da planilha):\n"
-                    "- **σ abs** = (Média CIQ × ETM% − |viés em unidade|) ÷ DP CIQ: o viés entra na unidade do "
-                    "exame (ex.: mg/dL), o mesmo valor para todos os níveis.\n"
-                    "- **σ %** = (ETM% − |viés %|) ÷ CV CIQ: o viés entra em %, proporcional à concentração.\n"
-                    "- **Automático**: σ abs quando alguma amostra da rodada está no cutoff do ETM absoluto ou "
-                    "abaixo (faixa em que a especificação é absoluta); senão σ %.\n\n"
-                    "Com viés por **regressão** as duas fórmulas dão o mesmo resultado. Em qualquer caso, quando "
-                    "a média do CIQ do nível está no cutoff ou abaixo, vale o ETM absoluto.\n\n"
-                    "**Pareamento amostra do EP × nível do CIQ** (qual CV entra no Sigma):\n"
-                    "- **Por concentração** (recomendado): cada amostra usa o nível de CIQ com média mais "
-                    "próxima do seu valor designado — o CV é o da mesma faixa em que o viés foi medido. Se o "
-                    "nível mais próximo ainda estiver longe (menos da metade ou mais do dobro), a amostra fica "
-                    "marcada: o Sigma é só indicativo, porque não há controle naquela faixa.\n"
-                    "- **Por posição** (como a planilha): amostra 1 → Nível 1, amostra 2 → Nível 2... Pode "
-                    "juntar concentrações muito diferentes (ex.: amostra de 130 com controle de 33).\n\n"
-                    "Em qualquer caso, **nenhuma amostra é descartada**: Bias %, ID e IZ são calculados para "
-                    "todas; o pareamento só decide qual CV entra no Sigma."
-                )
-            # o pareamento só decide qual CV entra no Sigma — no modo simples (sem Sigma) não aparece
-            pareamento_ep = st.radio(
-                "Pareamento amostra do EP × nível do CIQ", ep_calculo.PAREAMENTOS, horizontal=True,
-                key="ep_pareamento",
-                help="Por concentração: nível do CIQ com média mais próxima do valor designado (recomendado). "
-                     "Por posição: amostra 1 → Nível 1, amostra 2 → Nível 2 (como a planilha).",
-            ) if completo else ep_calculo.PAREAMENTOS[0]
-            fe1, fe2 = st.columns(2)
-            f_prov_ep = fe1.multiselect("Provedor", sorted(rodadas["Provedor"].unique()), key="ep_f_prov")
-            f_teste_ep = fe2.multiselect("Teste (Infinity)", sorted(rodadas["Mneumonico"].unique()), key="ep_f_teste")
-            vis = rodadas
-            if f_prov_ep:
-                vis = vis[vis["Provedor"].isin(f_prov_ep)]
-            if f_teste_ep:
-                vis = vis[vis["Mneumonico"].isin(f_teste_ep)]
-            opcoes_equip = [""] + sorted(df_ciq_total["Equipamento (nome)"].dropna().astype(str).unique())
-            colunas_editor = ["Envio", "Provedor", "Programa", "Rodada", "Mneumonico", "Teste_prov", "Sistema",
-                              "Equip_prov", "Amostras", "Equipamento", "Modo Viés", "Fórmula Sigma", "Origem"]
-            if not completo:   # sem Sigma no modo simples: a fórmula não aparece (fica a que estava)
-                colunas_editor.remove("Fórmula Sigma")
-            editaveis = ("Equipamento", "Modo Viés", "Fórmula Sigma")
-            editado = st.data_editor(
-                vis[colunas_editor].reset_index(drop=True), key="ep_editor", hide_index=True,
-                use_container_width=True, height=380,
-                disabled=[c for c in colunas_editor if c not in editaveis],
-                column_config={
-                    "Mneumonico": st.column_config.TextColumn("Teste (Infinity)"),
-                    "Teste_prov": st.column_config.TextColumn("Teste no provedor"),
-                    "Equip_prov": st.column_config.TextColumn("Equip. informado"),
-                    "Equipamento": st.column_config.SelectboxColumn("Equipamento (S.A.)", options=opcoes_equip),
-                    "Modo Viés": st.column_config.SelectboxColumn("Viés", options=ep_calculo.MODOS_VIES),
-                    "Fórmula Sigma": st.column_config.SelectboxColumn("Fórmula Sigma",
-                                                                      options=ep_calculo.FORMULAS_SIGMA),
-                },
-            )
-            if "Fórmula Sigma" not in editado.columns:
-                editado["Fórmula Sigma"] = vis["Fórmula Sigma"].to_numpy()
-            escolhas_atuais =(pd.concat([salvas, editado[editado["Equipamento"] != ""][CHAVE_RODADA + list(editaveis)]],
-                                         ignore_index=True).drop_duplicates(CHAVE_RODADA, keep="last"))
-            cs1, cs2 = st.columns(2)
-            if cs1.button("Salvar escolhas de equipamento/viés/fórmula", key="ep_salvar_rodadas"):
-                ep_base.grava_rodadas(escolhas_atuais)
-                st.success(f"{len(escolhas_atuais)} escolha(s) gravada(s) em dados_ep/ep_rodadas.csv."
-                           + (" No app online elas valem só nesta sessão: baixe o pacote de EP para guardá-las."
-                              if app_online else ""))
-            cs2.download_button(
-                "📦 Baixar pacote de EP (.zip)", ep_base.monta_pacote(base_ep, escolhas_atuais, depara_pacote),
-                f"pacote_ep_{pd.Timestamp.today():%Y-%m-%d}.zip", "application/zip", key="ep_baixar_pacote",
-                help="Base de EP + as escolhas desta tabela. Suba este arquivo na barra lateral do app online "
-                     "(ou guarde como cópia de segurança).")
-
-            # ---- 4. Resultados ----
-            grupos_ep = {k: g for k, g in mapeado.groupby(CHAVE_RODADA)}
-            linhas_res, resumo_res = [], []
-            # calcula todas as rodadas (com as edições da tabela) — o filtro acima só muda o que é exibido
-            todas_rodadas = rodadas.set_index(CHAVE_RODADA)
-            todas_rodadas.update(editado.set_index(CHAVE_RODADA)[list(editaveis)])
-            for rd in todas_rodadas.reset_index().to_dict("records"):
-                g = grupos_ep.get(tuple(rd[c] for c in CHAVE_RODADA))
-                if g is None:
-                    continue
-                # CAP pode trazer o mesmo espécime em dois grupos de comparação: fica o que foi avaliado
-                g = (g.assign(_aval=g["Nota"].isin(["Acceptable", "Unacceptable"]).astype(int))
-                     .sort_values("_aval", ascending=False).drop_duplicates("Especime"))
-                amostras = [{"Especime": a["Especime"], "Num": a["Num"], "RL": a["RL"] * a["Fator"],
-                             "VD": a["VD"] * a["Fator"], "Qualificador": a["Qualificador"],
-                             "DP Grupo": a["DP Grupo"] * a["Fator"] if pd.notna(a["DP Grupo"]) else None,
-                             "Índice Provedor": a["SDI"] if pd.notna(a["SDI"]) else None}
-                            for a in g.to_dict("records")]
-                d_envio = g["Data Envio"].iloc[0]
-                niveis = ciq_nivel.get((rd["Mneumonico"], rd["Equipamento"], d_envio.year, d_envio.month))
-                ciq_rodada, spec = {}, None
-                if niveis is not None:
-                    for _, n in niveis.iterrows():
-                        ciq_rodada[int(n["NívelNum"])] = {"Média": n["Média"], "CV (%)": n["CV (%)"]}
-                    spec = next((s for s in niveis["Spec"] if isinstance(s, dict)), None)
-                linhas, info = ep_calculo.calcula_rodada(amostras, ciq_rodada, spec, rd["Modo Viés"] or "Médio",
-                                                         rd["Fórmula Sigma"] or "Automático", pareamento_ep)
-                esm_rodada = (spec or spec_por_teste.get(rd["Mneumonico"]) or {}).get("ESM (%)")
-                izs = [abs(l["IZ"]) for l in linhas if l["IZ"] is not None]
-                base_linha = {"Envio": data_extenso_ep(d_envio), "_data": d_envio, "Provedor": rd["Provedor"],
-                              "Programa": rd["Programa"], "Rodada": rd["Rodada"], "Teste": rd["Mneumonico"],
-                              "Sistema": rd["Sistema"], "Equipamento": rd["Equipamento"] or "—"}
-                for l in linhas:
-                    linhas_res.append({**base_linha, **l, "Viés usado": info["Modo usado"] or "—"})
-                sigmas = [l["Sigma EP"] for l in linhas if l["Sigma EP"] is not None]
-                eq = (f"RL = {info['b']:.3f} × VD {'+' if info['a'] >= 0 else '−'} {abs(info['a']):.3f}"
-                      if info["b"] is not None else "")
-                resumo_res.append({**base_linha, "Viés usado": info["Modo usado"] or "—",
-                                   "Fórmula usada": info["Fórmula usada"] or "—", "Equação": eq,
-                                   "r": info["r"], "Viés médio (%)": info["Viés médio %"],
-                                   "Pior |IZ|": max(izs) if izs else None,
-                                   "Análise da rodada": ep_calculo.analisa_rodada(linhas, info, esm_rodada),
-                                   "Pior Sigma EP": min(sigmas) if sigmas else None,
-                                   "CIQ no mês": "sim" if ciq_rodada else "não",
-                                   "Escolha automática": info["Motivo"], "Aviso": info["Aviso"] or ""})
-
-            res_ep_global = pd.DataFrame(linhas_res)
-            resumo = pd.DataFrame(resumo_res)
-            res = res_ep_global
-            if f_prov_ep and not res.empty:
-                res, resumo = res[res["Provedor"].isin(f_prov_ep)], resumo[resumo["Provedor"].isin(f_prov_ep)]
-            if f_teste_ep and not res.empty:
-                res, resumo = res[res["Teste"].isin(f_teste_ep)], resumo[resumo["Teste"].isin(f_teste_ep)]
-            st.divider()
-            if completo and not resumo.empty:
-                ep_teste = resumo[(resumo["Teste"] == str(teste_global).upper()) & resumo["Pior Sigma EP"].notna()]
-                if not ep_teste.empty:
-                    pior = ep_teste.loc[ep_teste["Pior Sigma EP"].idxmin()]
-                    with st.container(border=True):
-                        st.caption(f"Pior Sigma do EP no período — {teste_global} (separado do pior cenário do CIQ)")
-                        st.markdown(f"<span style='font-size:30px; font-weight:700;'>{pior['Pior Sigma EP']:.2f}</span>",
-                                    unsafe_allow_html=True)
-                        st.caption(f"{pior['Provedor']} · {pior['Programa']} · {pior['Envio']} · {pior['Equipamento']}")
-
-            st.markdown("**Resultados por amostra**")
-            if res.empty:
-                st.info("Nenhum resultado para os filtros escolhidos.")
+        with ep_tab_res:
+            # ---- 3. Rodadas × equipamento ----
+            mapeado = b[b["Mneumonico"] != ""].copy()
+            if mapeado.empty:
+                st.info("Nenhuma rodada com teste correlacionado no período selecionado.")
             else:
-                def cor_iz(v):
-                    if pd.isna(v):
+                ciq = df_ciq_total.copy()
+                ciq["TesteU"] = ciq["Teste"].str.upper()
+                ciq["N"] = ciq["N"].fillna(0)
+                ciq_por_teste = {t: g for t, g in ciq.groupby("TesteU")}
+                ciq_valido = ciq.dropna(subset=["CV (%)", "Média", "NívelNum"])
+                ciq_nivel = ciq_valido.loc[ciq_valido.groupby(
+                    ["TesteU", "Equipamento (nome)", "Ano", "Mês", "NívelNum"])["N"].idxmax()]
+                ciq_nivel = {k: g for k, g in ciq_nivel.groupby(["TesteU", "Equipamento (nome)", "Ano", "Mês"])}
+                # especificação (ETM/ESM) por teste, pra análise de tendência mesmo sem CIQ no mês da rodada
+                spec_por_teste = {t: next((s for s in g["Spec"] if isinstance(s, dict)), None)
+                                  for t, g in ciq.groupby("TesteU")}
+
+                def plataforma_do_provedor(nome):
+                    n = str(nome or "").lower()
+                    return next((tipo for chave, tipo in PLATAFORMA_EP if chave in n), None)
+
+                def sugere_equipamento(mneu, d_envio, equip_prov):
+                    cand = ciq_por_teste.get(mneu)
+                    if cand is None or cand.empty:
                         return ""
-                    if abs(v) > ep_calculo.LIMITE_IZ_ACAO:
-                        return "background-color: #F4CCCC"
-                    return "background-color: #FFF2CC" if abs(v) > ep_calculo.LIMITE_IZ_ALERTA else ""
+                    tipo = plataforma_do_provedor(equip_prov)
+                    if tipo:
+                        mesma_plat = cand[cand["Tipo"].astype(str).str.upper() == tipo]
+                        cand = mesma_plat if not mesma_plat.empty else cand
+                    no_mes = cand[(cand["Ano"] == d_envio.year) & (cand["Mês"] == d_envio.month)]
+                    cand = no_mes if not no_mes.empty else cand
+                    return cand.groupby("Equipamento (nome)")["N"].sum().idxmax()
 
-                # Sigma logo depois do Bias, pra não precisar rolar a tabela pro lado
-                cols_res = ["Envio", "Provedor", "Teste", "Equipamento", "Especime", "RL", "VD", "Bias % amostra",
-                            "Índice Provedor", "IZ"]
-                if completo:
-                    cols_res += ["Sigma EP", "Nível CIQ", "Média CIQ", "VD/Média CIQ", "Nível longe", "CV CIQ (%)",
-                                 "Viés %", "Critério Sigma", "Viés usado"]
-                cols_res += ["Programa", "Rodada", "Posição", "Qualificador"]
-                tabela_res = res[cols_res]
-                fmt = {c: "{:.2f}" for c in ["Bias % amostra", "Índice Provedor", "IZ", "Média CIQ", "VD/Média CIQ",
-                                             "CV CIQ (%)", "Viés %", "Sigma EP"] if c in cols_res}
-                estilo = tabela_res.style.format(fmt, na_rep="—").map(cor_iz, subset=["IZ"])
-                if completo:
-                    estilo = estilo.map(cor_sigma, subset=["Sigma EP"])
-                st.dataframe(estilo, hide_index=True, use_container_width=True, height=420)
-                st.caption("Índice Provedor = índice informado pelo provedor (ID do ControlLab, S.D.I. do CAP). "
-                           "IZ = (RL − VD) ÷ DP do grupo: 🟨 |IZ| > 2 questionável · 🟥 |IZ| > 3 insatisfatório."
-                           + (" \"Nível longe\" = o controle mais próximo está a menos da metade ou mais do dobro "
-                              "da concentração da amostra (Sigma indicativo)." if completo else ""))
+                rodadas = (mapeado.groupby(CHAVE_RODADA).agg(
+                    Data=("Data Envio", "min"),
+                    Teste_prov=("Teste Provedor", lambda s: "; ".join(sorted(set(s)))),
+                    Equip_prov=("Equipamento Provedor", lambda s: "; ".join(sorted({x for x in s if x}))),
+                    Amostras=("Especime", "nunique")).reset_index())
+                salvas = ep_base.carrega_rodadas()
+                if rodadas_pacote is not None:
+                    # escolhas que vieram no pacote; as salvas nesta sessão (arquivo local) valem por cima
+                    salvas = (pd.concat([rodadas_pacote, salvas], ignore_index=True)
+                              .drop_duplicates(CHAVE_RODADA, keep="last"))
+                rodadas = rodadas.merge(salvas, how="left", on=CHAVE_RODADA)
+                rodadas["Equipamento"] = rodadas["Equipamento"].fillna("")
+                rodadas["Origem"] = rodadas["Equipamento"].map(lambda e: "salvo" if e else "")
+                faltam = rodadas["Equipamento"] == ""
+                rodadas.loc[faltam, "Equipamento"] = [
+                    sugere_equipamento(r.Mneumonico, r.Data, r.Equip_prov) for r in rodadas[faltam].itertuples()]
+                rodadas.loc[faltam & (rodadas["Equipamento"] != ""), "Origem"] = "sugerido"
+                rodadas["Modo Viés"] = rodadas["Modo Viés"].fillna("").replace("", "Médio")
+                rodadas["Fórmula Sigma"] = rodadas["Fórmula Sigma"].fillna("").replace("", "Automático")
+                rodadas["Envio"] = rodadas["Data"].map(data_extenso_ep)
+                rodadas = rodadas.sort_values(["Data", "Provedor", "Programa", "Mneumonico"], ascending=[False, True, True, True])
 
-                st.markdown("**Resumo por rodada**")
-                cols_resumo = ["Envio", "Provedor", "Teste", "Equipamento", "Viés usado", "Viés médio (%)",
-                               "Pior |IZ|", "Análise da rodada"]
-                if completo:
-                    cols_resumo += ["Pior Sigma EP", "Fórmula usada", "Equação", "r", "CIQ no mês",
-                                    "Escolha automática"]
-                cols_resumo += ["Programa", "Rodada", "Aviso"]
-                estilo_r = resumo[cols_resumo].style.format(
-                    {c: "{:.2f}" for c in ["Viés médio (%)", "Pior |IZ|", "Pior Sigma EP"] if c in cols_resumo} | (
-                        {"r": "{:.4f}"} if completo else {}), na_rep="—").map(cor_iz, subset=["Pior |IZ|"])
-                if completo:
-                    estilo_r = estilo_r.map(cor_sigma, subset=["Pior Sigma EP"])
-                st.dataframe(estilo_r, hide_index=True, use_container_width=True)
-
-                # ---- Histórico do teste: tendência entre rodadas ----
                 st.divider()
+                st.markdown("**Rodadas e equipamento**")
+                st.caption(
+                    "Os relatórios não dizem em qual equipamento a amostra foi analisada: escolha o equipamento "
+                    "(o S.A. da planilha), o viés e a fórmula do Sigma de cada rodada. \"sugerido\" = escolhido pelo "
+                    "app (no ControlLab, pelo equipamento que o próprio arquivo informa; no CAP, o de maior volume de "
+                    "CIQ no mês). Clique em Salvar para gravar as escolhas."
+                )
+                with st.expander("ℹ Como escolher o viés e a fórmula do Sigma"):
+                    st.markdown(
+                        "**Viés da rodada** — quanto o laboratório se afasta do valor designado:\n"
+                        "- **Médio**: diferença entre a média dos resultados do laboratório e a média dos valores "
+                        "designados. Um viés só, aplicado igual a todos os níveis do CIQ. Bom quando as amostras da "
+                        "rodada têm concentrações parecidas.\n"
+                        "- **Regressão**: reta RL = b × VD + a com as amostras da rodada; o viés é lido na "
+                        "concentração de cada nível do CIQ. Melhor quando as amostras têm concentrações bem "
+                        "diferentes, porque o viés pode mudar com a concentração (ex.: é pequeno no nível baixo e "
+                        "grande no alto). Precisa de amostras com boa correlação (r próximo de 1).\n"
+                        f"- **Automático**: usa regressão quando a maior concentração da rodada é pelo menos "
+                        f"{ep_calculo.RAZAO_CONCENTRACAO_REGRESSAO:g}× a menor, há 3 amostras ou mais e "
+                        f"r ≥ {ep_calculo.R_MINIMO_REGRESSAO:g}; senão, viés médio.\n\n"
+                        "**Fórmula do Sigma** (lista \"σ abs / σ %\" da planilha):\n"
+                        "- **σ abs** = (Média CIQ × ETM% − |viés em unidade|) ÷ DP CIQ: o viés entra na unidade do "
+                        "exame (ex.: mg/dL), o mesmo valor para todos os níveis.\n"
+                        "- **σ %** = (ETM% − |viés %|) ÷ CV CIQ: o viés entra em %, proporcional à concentração.\n"
+                        "- **Automático**: σ abs quando alguma amostra da rodada está no cutoff do ETM absoluto ou "
+                        "abaixo (faixa em que a especificação é absoluta); senão σ %.\n\n"
+                        "Com viés por **regressão** as duas fórmulas dão o mesmo resultado. Em qualquer caso, quando "
+                        "a média do CIQ do nível está no cutoff ou abaixo, vale o ETM absoluto.\n\n"
+                        "**Pareamento amostra do EP × nível do CIQ** (qual CV entra no Sigma):\n"
+                        "- **Por concentração** (recomendado): cada amostra usa o nível de CIQ com média mais "
+                        "próxima do seu valor designado — o CV é o da mesma faixa em que o viés foi medido. Se o "
+                        "nível mais próximo ainda estiver longe (menos da metade ou mais do dobro), a amostra fica "
+                        "marcada: o Sigma é só indicativo, porque não há controle naquela faixa.\n"
+                        "- **Por posição** (como a planilha): amostra 1 → Nível 1, amostra 2 → Nível 2... Pode "
+                        "juntar concentrações muito diferentes (ex.: amostra de 130 com controle de 33).\n\n"
+                        "Em qualquer caso, **nenhuma amostra é descartada**: Bias %, ID e IZ são calculados para "
+                        "todas; o pareamento só decide qual CV entra no Sigma."
+                    )
+                # o pareamento só decide qual CV entra no Sigma — no modo simples (sem Sigma) não aparece
+                pareamento_ep = st.radio(
+                    "Pareamento amostra do EP × nível do CIQ", ep_calculo.PAREAMENTOS, horizontal=True,
+                    key="ep_pareamento",
+                    help="Por concentração: nível do CIQ com média mais próxima do valor designado (recomendado). "
+                         "Por posição: amostra 1 → Nível 1, amostra 2 → Nível 2 (como a planilha).",
+                ) if completo else ep_calculo.PAREAMENTOS[0]
+                fe1, fe2 = st.columns(2)
+                f_prov_ep = fe1.multiselect("Provedor", sorted(rodadas["Provedor"].unique()), key="ep_f_prov")
+                f_teste_ep = fe2.multiselect("Teste (Infinity)", sorted(rodadas["Mneumonico"].unique()), key="ep_f_teste")
+                vis = rodadas
+                if f_prov_ep:
+                    vis = vis[vis["Provedor"].isin(f_prov_ep)]
+                if f_teste_ep:
+                    vis = vis[vis["Mneumonico"].isin(f_teste_ep)]
+                opcoes_equip = [""] + sorted(df_ciq_total["Equipamento (nome)"].dropna().astype(str).unique())
+                colunas_editor = ["Envio", "Provedor", "Programa", "Rodada", "Mneumonico", "Teste_prov", "Sistema",
+                                  "Equip_prov", "Amostras", "Equipamento", "Modo Viés", "Fórmula Sigma", "Origem"]
+                if not completo:   # sem Sigma no modo simples: a fórmula não aparece (fica a que estava)
+                    colunas_editor.remove("Fórmula Sigma")
+                editaveis = ("Equipamento", "Modo Viés", "Fórmula Sigma")
+                editado = st.data_editor(
+                    vis[colunas_editor].reset_index(drop=True), key="ep_editor", hide_index=True,
+                    use_container_width=True, height=380,
+                    disabled=[c for c in colunas_editor if c not in editaveis],
+                    column_config={
+                        "Mneumonico": st.column_config.TextColumn("Teste (Infinity)"),
+                        "Teste_prov": st.column_config.TextColumn("Teste no provedor"),
+                        "Equip_prov": st.column_config.TextColumn("Equip. informado"),
+                        "Equipamento": st.column_config.SelectboxColumn("Equipamento (S.A.)", options=opcoes_equip),
+                        "Modo Viés": st.column_config.SelectboxColumn("Viés", options=ep_calculo.MODOS_VIES),
+                        "Fórmula Sigma": st.column_config.SelectboxColumn("Fórmula Sigma",
+                                                                          options=ep_calculo.FORMULAS_SIGMA),
+                    },
+                )
+                if "Fórmula Sigma" not in editado.columns:
+                    editado["Fórmula Sigma"] = vis["Fórmula Sigma"].to_numpy()
+                escolhas_atuais =(pd.concat([salvas, editado[editado["Equipamento"] != ""][CHAVE_RODADA + list(editaveis)]],
+                                             ignore_index=True).drop_duplicates(CHAVE_RODADA, keep="last"))
+                cs1, cs2 = st.columns(2)
+                if cs1.button("Salvar escolhas de equipamento/viés/fórmula", key="ep_salvar_rodadas"):
+                    ep_base.grava_rodadas(escolhas_atuais)
+                    st.success(f"{len(escolhas_atuais)} escolha(s) gravada(s) em dados_ep/ep_rodadas.csv."
+                               + (" No app online elas valem só nesta sessão: baixe o pacote de EP para guardá-las."
+                                  if app_online else ""))
+                cs2.download_button(
+                    "📦 Baixar pacote de EP (.zip)", ep_base.monta_pacote(base_ep, escolhas_atuais, depara_pacote),
+                    f"pacote_ep_{pd.Timestamp.today():%Y-%m-%d}.zip", "application/zip", key="ep_baixar_pacote",
+                    help="Base de EP + as escolhas desta tabela. Suba este arquivo na barra lateral do app online "
+                         "(ou guarde como cópia de segurança).")
+
+                # ---- 4. Resultados ----
+                grupos_ep = {k: g for k, g in mapeado.groupby(CHAVE_RODADA)}
+                linhas_res, resumo_res = [], []
+                # calcula todas as rodadas (com as edições da tabela) — o filtro acima só muda o que é exibido
+                todas_rodadas = rodadas.set_index(CHAVE_RODADA)
+                todas_rodadas.update(editado.set_index(CHAVE_RODADA)[list(editaveis)])
+                for rd in todas_rodadas.reset_index().to_dict("records"):
+                    g = grupos_ep.get(tuple(rd[c] for c in CHAVE_RODADA))
+                    if g is None:
+                        continue
+                    # CAP pode trazer o mesmo espécime em dois grupos de comparação: fica o que foi avaliado
+                    g = (g.assign(_aval=g["Nota"].isin(["Acceptable", "Unacceptable"]).astype(int))
+                         .sort_values("_aval", ascending=False).drop_duplicates("Especime"))
+                    amostras = [{"Especime": a["Especime"], "Num": a["Num"], "RL": a["RL"] * a["Fator"],
+                                 "VD": a["VD"] * a["Fator"], "Qualificador": a["Qualificador"],
+                                 "DP Grupo": a["DP Grupo"] * a["Fator"] if pd.notna(a["DP Grupo"]) else None,
+                                 "Índice Provedor": a["SDI"] if pd.notna(a["SDI"]) else None}
+                                for a in g.to_dict("records")]
+                    d_envio = g["Data Envio"].iloc[0]
+                    niveis = ciq_nivel.get((rd["Mneumonico"], rd["Equipamento"], d_envio.year, d_envio.month))
+                    ciq_rodada, spec = {}, None
+                    if niveis is not None:
+                        for _, n in niveis.iterrows():
+                            ciq_rodada[int(n["NívelNum"])] = {"Média": n["Média"], "CV (%)": n["CV (%)"]}
+                        spec = next((s for s in niveis["Spec"] if isinstance(s, dict)), None)
+                    linhas, info = ep_calculo.calcula_rodada(amostras, ciq_rodada, spec, rd["Modo Viés"] or "Médio",
+                                                             rd["Fórmula Sigma"] or "Automático", pareamento_ep)
+                    esm_rodada = (spec or spec_por_teste.get(rd["Mneumonico"]) or {}).get("ESM (%)")
+                    izs = [abs(l["IZ"]) for l in linhas if l["IZ"] is not None]
+                    base_linha = {"Envio": data_extenso_ep(d_envio), "_data": d_envio, "Provedor": rd["Provedor"],
+                                  "Programa": rd["Programa"], "Rodada": rd["Rodada"], "Teste": rd["Mneumonico"],
+                                  "Sistema": rd["Sistema"], "Equipamento": rd["Equipamento"] or "—"}
+                    for l in linhas:
+                        linhas_res.append({**base_linha, **l, "Viés usado": info["Modo usado"] or "—"})
+                    sigmas = [l["Sigma EP"] for l in linhas if l["Sigma EP"] is not None]
+                    eq = (f"RL = {info['b']:.3f} × VD {'+' if info['a'] >= 0 else '−'} {abs(info['a']):.3f}"
+                          if info["b"] is not None else "")
+                    resumo_res.append({**base_linha, "Viés usado": info["Modo usado"] or "—",
+                                       "Fórmula usada": info["Fórmula usada"] or "—", "Equação": eq,
+                                       "r": info["r"], "Viés médio (%)": info["Viés médio %"],
+                                       "Pior |IZ|": max(izs) if izs else None,
+                                       "Análise da rodada": ep_calculo.analisa_rodada(linhas, info, esm_rodada),
+                                       "Pior Sigma EP": min(sigmas) if sigmas else None,
+                                       "CIQ no mês": "sim" if ciq_rodada else "não",
+                                       "Escolha automática": info["Motivo"], "Aviso": info["Aviso"] or ""})
+
+                res_ep_global = pd.DataFrame(linhas_res)
+                resumo = pd.DataFrame(resumo_res)
+                resumo_total = resumo   # sem os filtros de provedor/teste (histórico)
+                res = res_ep_global
+                if f_prov_ep and not res.empty:
+                    res, resumo = res[res["Provedor"].isin(f_prov_ep)], resumo[resumo["Provedor"].isin(f_prov_ep)]
+                if f_teste_ep and not res.empty:
+                    res, resumo = res[res["Teste"].isin(f_teste_ep)], resumo[resumo["Teste"].isin(f_teste_ep)]
+                st.divider()
+                if completo and not resumo.empty:
+                    ep_teste = resumo[(resumo["Teste"] == str(teste_global).upper()) & resumo["Pior Sigma EP"].notna()]
+                    if not ep_teste.empty:
+                        pior = ep_teste.loc[ep_teste["Pior Sigma EP"].idxmin()]
+                        with st.container(border=True):
+                            st.caption(f"Pior Sigma do EP no período — {teste_global} (separado do pior cenário do CIQ)")
+                            st.markdown(f"<span style='font-size:30px; font-weight:700;'>{pior['Pior Sigma EP']:.2f}</span>",
+                                        unsafe_allow_html=True)
+                            st.caption(f"{pior['Provedor']} · {pior['Programa']} · {pior['Envio']} · {pior['Equipamento']}")
+
+                st.markdown("**Resultados por amostra**")
+                if res.empty:
+                    st.info("Nenhum resultado para os filtros escolhidos.")
+                else:
+                    def cor_iz(v):
+                        if pd.isna(v):
+                            return ""
+                        if abs(v) > ep_calculo.LIMITE_IZ_ACAO:
+                            return "background-color: #F4CCCC"
+                        return "background-color: #FFF2CC" if abs(v) > ep_calculo.LIMITE_IZ_ALERTA else ""
+
+                    # Sigma logo depois do Bias, pra não precisar rolar a tabela pro lado
+                    cols_res = ["Envio", "Provedor", "Teste", "Equipamento", "Especime", "RL", "VD", "Bias % amostra",
+                                "Índice Provedor", "IZ"]
+                    if completo:
+                        cols_res += ["Sigma EP", "Nível CIQ", "Média CIQ", "VD/Média CIQ", "Nível longe", "CV CIQ (%)",
+                                     "Viés %", "Critério Sigma", "Viés usado"]
+                    cols_res += ["Programa", "Rodada", "Posição", "Qualificador"]
+                    tabela_res = res[cols_res]
+                    fmt = {c: "{:.2f}" for c in ["Bias % amostra", "Índice Provedor", "IZ", "Média CIQ", "VD/Média CIQ",
+                                                 "CV CIQ (%)", "Viés %", "Sigma EP"] if c in cols_res}
+                    estilo = tabela_res.style.format(fmt, na_rep="—").map(cor_iz, subset=["IZ"])
+                    if completo:
+                        estilo = estilo.map(cor_sigma, subset=["Sigma EP"])
+                    st.dataframe(estilo, hide_index=True, use_container_width=True, height=420)
+                    st.caption("Índice Provedor = índice informado pelo provedor (ID do ControlLab, S.D.I. do CAP). "
+                               "IZ = (RL − VD) ÷ DP do grupo: 🟨 |IZ| > 2 questionável · 🟥 |IZ| > 3 insatisfatório."
+                               + (" \"Nível longe\" = o controle mais próximo está a menos da metade ou mais do dobro "
+                                  "da concentração da amostra (Sigma indicativo)." if completo else ""))
+
+                    st.markdown("**Resumo por rodada**")
+                    cols_resumo = ["Envio", "Provedor", "Teste", "Equipamento", "Viés usado", "Viés médio (%)",
+                                   "Pior |IZ|", "Análise da rodada"]
+                    if completo:
+                        cols_resumo += ["Pior Sigma EP", "Fórmula usada", "Equação", "r", "CIQ no mês",
+                                        "Escolha automática"]
+                    cols_resumo += ["Programa", "Rodada", "Aviso"]
+                    estilo_r = resumo[cols_resumo].style.format(
+                        {c: "{:.2f}" for c in ["Viés médio (%)", "Pior |IZ|", "Pior Sigma EP"] if c in cols_resumo} | (
+                            {"r": "{:.4f}"} if completo else {}), na_rep="—").map(cor_iz, subset=["Pior |IZ|"])
+                    if completo:
+                        estilo_r = estilo_r.map(cor_sigma, subset=["Pior Sigma EP"])
+                    st.dataframe(estilo_r, hide_index=True, use_container_width=True)
+
+                    fato = res.drop(columns=["_data"]).assign(**{"Ano": res["_data"].map(lambda d: d.year),
+                                                                  "Mês": res["_data"].map(lambda d: d.month)})
+                    c1, c2 = st.columns(2)
+                    c1.download_button("Baixar Fato_EP (CSV)", fato.to_csv(index=False).encode("utf-8-sig"),
+                                       "fato_ep.csv", "text/csv")
+                    if c2.button("Gravar Fato_EP para o Power BI", key="ep_fato"):
+                        ep_base.PASTA_DADOS.mkdir(exist_ok=True)
+                        fato.to_csv(ep_base.PASTA_DADOS / "fato_ep.csv", index=False, encoding="utf-8-sig")
+                        st.success("Gravado em dados_ep/fato_ep.csv.")
+
+        # ---- Histórico do teste: tendência entre rodadas (sem os filtros da aba de resultados) ----
+        with ep_tab_hist:
+            if mapeado.empty or resumo_total.empty:
+                st.info("Nenhuma rodada com teste correlacionado no período selecionado.")
+            else:
                 st.markdown("**Histórico do teste — tendência entre as rodadas**")
-                testes_hist = sorted(resumo["Teste"].unique())
+                testes_hist = sorted(resumo_total["Teste"].unique())
                 padrao_hist = str(teste_global).upper()
                 teste_hist = st.selectbox(
                     "Teste", testes_hist, key="ep_hist_teste",
                     index=testes_hist.index(padrao_hist) if padrao_hist in testes_hist else 0)
-                hist = resumo[resumo["Teste"] == teste_hist].sort_values("_data")
-                am_hist = res[res["Teste"] == teste_hist]
+                hist = resumo_total[resumo_total["Teste"] == teste_hist].sort_values("_data")
+                am_hist = res_ep_global[res_ep_global["Teste"] == teste_hist]
                 esm_hist = (spec_por_teste.get(teste_hist) or {}).get("ESM (%)")
                 alertas = ep_calculo.analisa_historico(
                     [{"Rótulo": f"{r['Provedor']} {r['Envio']}", "Viés %": r["Viés médio (%)"],
@@ -2307,16 +2352,6 @@ with tab_ep:
                 fig_z.update_layout(title="Índice Z (IZ) por amostra", yaxis_title="IZ", height=360,
                                     legend=dict(orientation="h", y=-0.2), margin=dict(t=40))
                 g2.plotly_chart(fig_z, use_container_width=True)
-
-                fato = res.drop(columns=["_data"]).assign(**{"Ano": res["_data"].map(lambda d: d.year),
-                                                              "Mês": res["_data"].map(lambda d: d.month)})
-                c1, c2 = st.columns(2)
-                c1.download_button("Baixar Fato_EP (CSV)", fato.to_csv(index=False).encode("utf-8-sig"),
-                                   "fato_ep.csv", "text/csv")
-                if c2.button("Gravar Fato_EP para o Power BI", key="ep_fato"):
-                    ep_base.PASTA_DADOS.mkdir(exist_ok=True)
-                    fato.to_csv(ep_base.PASTA_DADOS / "fato_ep.csv", index=False, encoding="utf-8-sig")
-                    st.success("Gravado em dados_ep/fato_ep.csv.")
 
 # ---------------- SIGMA POR PERÍODO ----------------
 if completo:

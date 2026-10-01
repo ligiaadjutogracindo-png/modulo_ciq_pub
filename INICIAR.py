@@ -1,7 +1,7 @@
 """
 INICIAR.py
 -----------
-Script auxiliar para rodar o Módulo de CIQ sem precisar abrir CMD/PowerShell.
+Script auxiliar para rodar o app Desempenho Analítico sem precisar abrir CMD/PowerShell.
 """
 import subprocess
 import sys
@@ -11,7 +11,7 @@ PASTA = os.path.dirname(os.path.abspath(__file__))
 os.chdir(PASTA)
 
 print("=" * 60)
-print("Módulo de CIQ - preparando ambiente")
+print("Desempenho Analítico - preparando ambiente")
 print("=" * 60)
 
 print("\n[0/3] Verificando se o pip está disponível...")
