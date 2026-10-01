@@ -808,6 +808,8 @@ with st.sidebar:
 ini_ord_g = meses_ordenados_global.index(f_periodo_global[0])
 fim_ord_g = meses_ordenados_global.index(f_periodo_global[1])
 periodo_valido_g = set(meses_ordenados_global[ini_ord_g:fim_ord_g + 1])
+# eixo de meses sempre em ordem cronológica (sem isso, um mês que só aparece na 2ª curva vai pro fim do eixo)
+EIXO_MESES = {"xaxis_categoryorder": "array", "xaxis_categoryarray": meses_ordenados_global}
 df = df[df["Mês/Ano"].isin(periodo_valido_g)]
 if f_tipo_global:
     df = df[df["Tipo"].isin(f_tipo_global)]
@@ -1158,7 +1160,7 @@ with tab_grafico:
                     ))
 
             fig.update_layout(
-                xaxis_title="Mês/Ano", yaxis_title="CV (%)",
+                xaxis_title="Mês/Ano", **EIXO_MESES, yaxis_title="CV (%)",
                 height=560, hovermode="x unified",
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
                 margin=dict(t=60),
@@ -1217,7 +1219,7 @@ with tab_grafico:
                         ))
                     fig_n_bias.add_hline(y=0, line=dict(color="#999999", width=1))
                     fig_n_bias.update_layout(
-                        xaxis_title="Mês/Ano", yaxis_title="Bias (%)", height=450,
+                        xaxis_title="Mês/Ano", **EIXO_MESES, yaxis_title="Bias (%)", height=450,
                         hovermode="x unified",
                         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
                         margin=dict(t=50),
@@ -1237,7 +1239,7 @@ with tab_grafico:
                             line=dict(color=PALETA[i % len(PALETA)], width=2), marker=dict(size=6),
                         ))
                     fig_n_cv.update_layout(
-                        xaxis_title="Mês/Ano", yaxis_title="CV (%)", height=450,
+                        xaxis_title="Mês/Ano", **EIXO_MESES, yaxis_title="CV (%)", height=450,
                         hovermode="x unified",
                         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
                         margin=dict(t=50),
@@ -1451,7 +1453,7 @@ with tab_bias:
                         ))
                 fig_b.add_hline(y=0, line=dict(color="#999999", width=1))
                 fig_b.update_layout(
-                    xaxis_title="Mês/Ano", yaxis_title="Bias (%) ou valor absoluto",
+                    xaxis_title="Mês/Ano", **EIXO_MESES, yaxis_title="Bias (%) ou valor absoluto",
                     height=560, hovermode="x unified",
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
                     margin=dict(t=60),
@@ -1516,7 +1518,7 @@ with tab_bias:
                         ))
                 fig_b.add_hline(y=0, line=dict(color="#999999", width=1))
                 fig_b.update_layout(
-                    xaxis_title="Mês/Ano", yaxis_title="Bias (%) ou valor absoluto",
+                    xaxis_title="Mês/Ano", **EIXO_MESES, yaxis_title="Bias (%) ou valor absoluto",
                     height=560, hovermode="x unified",
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
                     margin=dict(t=60),
@@ -1665,7 +1667,7 @@ with tab_et:
                             line=dict(color=cor, width=1.2, dash="dash"), opacity=0.6,
                         ))
                 fig_e.update_layout(
-                    xaxis_title="Mês/Ano", yaxis_title="Erro Total (%) ou valor absoluto",
+                    xaxis_title="Mês/Ano", **EIXO_MESES, yaxis_title="Erro Total (%) ou valor absoluto",
                     height=560, hovermode="x unified",
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
                     margin=dict(t=60),
@@ -1717,7 +1719,7 @@ with tab_et:
                             line=dict(color=cor, width=1.2, dash="dash"), opacity=0.6,
                         ))
                 fig_e.update_layout(
-                    xaxis_title="Mês/Ano", yaxis_title="Erro Total (%) ou valor absoluto",
+                    xaxis_title="Mês/Ano", **EIXO_MESES, yaxis_title="Erro Total (%) ou valor absoluto",
                     height=560, hovermode="x unified",
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
                     margin=dict(t=60),
@@ -1756,8 +1758,11 @@ with tab_tabela:
                  "Classificação Sigma (Westgard)", "Critério Sigma"]
     if not completo:
         cols_show = [c for c in cols_show if "Sigma" not in c]
-    st.dataframe(df_filtrado[cols_show].rename(columns={"Equipamento (nome)": "Equipamento"}),
-                 hide_index=True, use_container_width=True, height=500)
+    exibe = df_filtrado[cols_show].rename(columns={"Equipamento (nome)": "Equipamento"})
+    exibe["Mês/Ano"] = pd.to_datetime(dict(year=df_filtrado["Ano"], month=df_filtrado["Mês"], day=1))
+    st.dataframe(exibe.sort_values("Mês/Ano", ascending=False, kind="stable"), hide_index=True,
+                 use_container_width=True, height=500,
+                 column_config={"Mês/Ano": st.column_config.DateColumn("Mês/Ano", format="MM/YYYY")})
     st.caption(f"{len(df_filtrado)} de {len(df)} registros exibidos")
 
     csv = df_filtrado[cols_show].to_csv(index=False).encode("utf-8-sig")
@@ -1770,6 +1775,10 @@ PLATAFORMA_EP = [("c702", "BIOQ"), ("c503", "BIOQ"), ("cobas c", "BIOQ"), ("e801
                  ("atellica", "ATELLICA"), ("liaison", "LIAISON"), ("bn ii", "BN"), ("immulite", "IMMULITE"),
                  ("maglumi", "MAGLUMI"), ("diestro", "DIESTRO"), ("c513", "C513")]
 CHAVE_RODADA = ["Provedor", "Programa", "Rodada", "Mneumonico", "Sistema"]
+MOSTRAR_DEPARA_EP = False   # situação do de-para escondida enquanto a ferramenta é validada
+# opções de cálculo do Sigma do EP (rótulo na tela → valor do ep_calculo)
+OPCOES_VIES_EP = {"Automático": "Automático", "Médio (%)": "Médio", "Regressão": "Regressão"}
+OPCOES_FORMULA_EP = {"Automático": "Automático", "σ %": "σ %", "σ absoluto": "σ abs"}
 res_ep_global = pd.DataFrame()   # resultados do EP por amostra, usados também na aba de Sigma
 
 
@@ -1806,22 +1815,73 @@ def mes_ano_curto(d):
     return f"{MESES_NOME[d.month]}/{str(d.year)[2:]}" if pd.notna(d) and d else ""
 
 
-def data_extenso_ep(d):
-    return f"{d.day:02d}/{MESES_NOME[d.month].lower()}/{d.year}" if pd.notna(d) and d else ""
+def mes_ano_ep(d):
+    return f"{MESES_NOME[d.month]}/{d.year}" if pd.notna(d) and d else ""
+
+
+def cor_limite_ep(v, limite):
+    """Só verde (dentro do limite) ou vermelho (fora)."""
+    if v is None or pd.isna(v):
+        return ""
+    return "background-color: #F4CCCC" if abs(v) > limite else "background-color: #D9EAD3"
+
+
+CORES_AMOSTRA_EP = ["#1565C0", "#2E7D32", "#EC407A", "#F57F17", "#6A1B9A", "#00838F", "#5D4037"]
+
+
+def grafico_historico_ep(dados, coluna, titulo, faixa=None, limite_vermelho=None, eixo_minimo=4.0,
+                         rotulo_faixa=None):
+    """Um ponto por amostra (cor = posição da amostra na rodada, como no gráfico do ControlLab), faixa
+    aceitável em verde e a média de cada rodada ligada por uma linha cinza."""
+    validos = dados.dropna(subset=[coluna])
+    # posição no eixo = mês da rodada (CAP e ControlLab do mesmo mês ficam na mesma coluna)
+    validos = validos.assign(_mes=validos["_data"].map(lambda d: pd.Timestamp(d.year, d.month, 1)))
+    fig = go.Figure()
+    if faixa is not None and pd.notna(faixa):
+        fig.add_hrect(y0=-faixa, y1=faixa, fillcolor="#2E7D32", opacity=0.13, line_width=0)
+        if rotulo_faixa:   # rótulo só na linha de cima (sem texto, o plotly escreve "new text")
+            fig.add_hline(y=faixa, line=dict(color="#C62828", width=1.2, dash="dash"),
+                          annotation_text=rotulo_faixa, annotation_position="top left")
+            fig.add_hline(y=-faixa, line=dict(color="#C62828", width=1.2, dash="dash"))
+    if limite_vermelho is not None:
+        for s in (1, -1):
+            fig.add_hline(y=s * limite_vermelho, line=dict(color="#C62828", width=1, dash="dash"))
+    fig.add_hline(y=0, line=dict(color="#999999", width=1))
+    for prov, gp in validos.groupby("Provedor"):
+        medias = gp.groupby(["_mes", "Programa", "Rodada"])[coluna].mean().reset_index().sort_values("_mes")
+        fig.add_trace(go.Scatter(
+            x=medias["_mes"], y=medias[coluna], mode="lines", hoverinfo="skip", name=f"Média da rodada ({prov})",
+            line=dict(color="#757575", width=1.5, dash="solid" if prov == "ControlLab" else "dot")))
+    for pos, gp in validos.groupby("Posição"):
+        fig.add_trace(go.Scatter(
+            x=gp["_mes"], y=gp[coluna], mode="markers", name=f"Amostra {int(pos)}",
+            marker=dict(size=10, color=CORES_AMOSTRA_EP[(int(pos) - 1) % len(CORES_AMOSTRA_EP)],
+                        symbol=["diamond" if p == "ControlLab" else "circle" for p in gp["Provedor"]],
+                        line=dict(width=0.5, color="white")),
+            text=[f"{p} · {e} · {mes_ano_ep(d)}" for p, e, d in zip(gp["Provedor"], gp["Especime"], gp["_data"])],
+            hovertemplate="%{text}<br>%{y:.2f}<extra></extra>"))
+    datas = sorted(set(validos["_mes"]))
+    fig.update_xaxes(tickvals=datas, ticktext=[mes_ano_ep(d) for d in datas],
+                     tickangle=-45 if len(datas) > 6 else 0)
+    if eixo_minimo is not None:
+        maior = max([eixo_minimo] + [abs(v) * 1.1 for v in validos[coluna]])
+        fig.update_yaxes(range=[-maior, maior])
+    if validos.empty:
+        fig.add_annotation(text="sem dados", showarrow=False, x=0.5, y=0.5, xref="paper", yref="paper")
+    fig.update_layout(title=titulo, height=380, margin=dict(t=40, b=10), legend=dict(orientation="h", y=-0.3))
+    return fig
 
 
 with tab_ep:
     st.subheader("Ensaio de Proficiência (EP) — CAP e ControlLab")
     st.caption(
-        "O EP usa o CV e a Média do CIQ do equipamento informado, no mês da rodada: cada amostra é "
-        "comparada com o nível do CIQ de concentração mais próxima"
-        + (" (ou por posição, como a planilha — escolha em \"Pareamento\", na aba Rodadas e resultados). " if completo else ". ")
-        + "O período da barra lateral também filtra as rodadas daqui."
+        "Cada amostra do EP é comparada com o CIQ do equipamento escolhido, no mês da rodada. "
+        "O período da barra lateral também filtra as rodadas daqui."
         + ("" if completo else " No modo simples aparece só o Bias do EP, sem Sigma.")
     )
     avisos_ep = st.container()   # avisos gerais do EP, acima das abas internas
     ep_tab_res, ep_tab_hist, ep_tab_base = st.tabs(
-        ["📋 Rodadas e resultados", "📈 Histórico do teste", "⚙️ Base e de-para"])
+        ["📋 Rodadas e resultados", "📈 Histórico do teste", "⚙️ Atualizar base"])
 
     # ---- 1. Atualizar a base ----
     pdftotext_exe = ep_base.localiza_pdftotext()
@@ -1994,46 +2054,56 @@ with tab_ep:
     if base_ep.empty:
         with avisos_ep:
             st.info("A base de EP ainda está vazia — suba o pacote de EP na barra lateral ou use "
-                    "a aba ⚙️ Base e de-para.")
+                    "a aba ⚙️ Atualizar base.")
     else:
         b = base_ep.copy()
+        for c in ("Lim Inf", "Lim Sup"):   # pacotes gerados antes de existirem essas colunas
+            if c not in b.columns:
+                b[c] = None
         b["Módulo/Programa"] = b["Programa"].where(b["Provedor"] != "CAP",
                                                    b["Programa"].str.replace(r"-[A-Z]$", "", regex=True))
         b = b.merge(depara_ep, how="left",
                     left_on=["Provedor", "Módulo/Programa", "Teste Provedor", "Unidade"],
                     right_on=["Provedor", "Módulo/Programa", "Teste Provedor", "Unidade Provedor"])
-        b["Mneumonico"] = b["Mneumonico Infinity"].fillna("")
+        # o de-para pode trazer mais de um mnemônico ("ACTH;ACT", quando o teste mudou de equipamento e de
+        # código): o 1º dá nome ao teste; o CIQ usado é o do primeiro que existir no mês da rodada
+        b["Mneumonicos"] = b["Mneumonico Infinity"].fillna("").astype(str).map(
+            lambda s: tuple(m.strip() for m in s.split(";") if m.strip()))
+        b["Mneumonico"] = b["Mneumonicos"].map(lambda t: t[0] if t else "")
         b["Fator"] = b["Fator"].fillna(1.0)
         b["Mês/Ano"] = b["Data Envio"].map(mes_ano_curto)
         b = b[b["Mês/Ano"].isin(periodo_valido_g)]
 
-        with ep_tab_base:
-            # ---- 2. Situação do de-para ----
-            sem_depara = (b[b["Confiança"].isna()]
-                          .groupby(["Provedor", "Módulo/Programa", "Teste Provedor", "Unidade"])
-                          .size().reset_index(name="Resultados"))
-            duvidas = depara_ep[depara_ep["Confiança"] == "dúvida"]
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Rodadas com teste correlacionado", b[b["Mneumonico"] != ""].groupby(
-                ["Provedor", "Programa", "Rodada", "Mneumonico", "Sistema"]).ngroups)
-            m2.metric("Testes sem de-para no período", len(sem_depara))
-            m3.metric("Dúvidas no de-para", len(duvidas))
-            if len(sem_depara) or len(duvidas):
-                with st.expander("Ver testes sem de-para e dúvidas"):
-                    st.caption(
-                        "O de-para fica em `reference_data/ep_depara_testes.xlsx` (colunas Mneumonico Infinity e "
-                        "Fator). Edite, salve e recarregue o app. Teste sem mnemônico não entra no cálculo."
-                    )
-                    if len(sem_depara):
-                        st.markdown("**Testes do EP que ainda não estão no de-para**")
-                        st.dataframe(sem_depara, hide_index=True, use_container_width=True)
-                    if len(duvidas):
-                        st.markdown("**Correlações marcadas como dúvida**")
-                        st.dataframe(duvidas[["Provedor", "Módulo/Programa", "Teste Provedor", "Mneumonico Infinity",
-                                              "Fator", "Observação"]], hide_index=True, use_container_width=True)
+        if MOSTRAR_DEPARA_EP:
+            with ep_tab_base:
+                # ---- Situação do de-para ----
+                sem_depara = (b[b["Confiança"].isna()]
+                              .groupby(["Provedor", "Módulo/Programa", "Teste Provedor", "Unidade"])
+                              .size().reset_index(name="Resultados"))
+                duvidas = depara_ep[depara_ep["Confiança"] == "dúvida"]
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Rodadas com teste correlacionado", b[b["Mneumonico"] != ""].groupby(
+                    ["Provedor", "Programa", "Rodada", "Mneumonico", "Sistema"]).ngroups)
+                m2.metric("Testes sem de-para no período", len(sem_depara))
+                m3.metric("Dúvidas no de-para", len(duvidas))
+                if len(sem_depara) or len(duvidas):
+                    with st.expander("Ver testes sem de-para e dúvidas"):
+                        st.caption(
+                            "O de-para fica em `reference_data/ep_depara_testes.xlsx` (colunas Mneumonico Infinity e "
+                            "Fator). Edite, salve e recarregue o app. Teste sem mnemônico não entra no cálculo."
+                        )
+                        if len(sem_depara):
+                            st.markdown("**Testes do EP que ainda não estão no de-para**")
+                            st.dataframe(sem_depara, hide_index=True, use_container_width=True)
+                        if len(duvidas):
+                            st.markdown("**Correlações marcadas como dúvida**")
+                            st.dataframe(duvidas[["Provedor", "Módulo/Programa", "Teste Provedor",
+                                                  "Mneumonico Infinity", "Fator", "Observação"]],
+                                         hide_index=True, use_container_width=True)
 
+        escolhas_atuais = None
+        resumo_total = pd.DataFrame()
         with ep_tab_res:
-            # ---- 3. Rodadas × equipamento ----
             mapeado = b[b["Mneumonico"] != ""].copy()
             if mapeado.empty:
                 st.info("Nenhuma rodada com teste correlacionado no período selecionado.")
@@ -2054,10 +2124,11 @@ with tab_ep:
                     n = str(nome or "").lower()
                     return next((tipo for chave, tipo in PLATAFORMA_EP if chave in n), None)
 
-                def sugere_equipamento(mneu, d_envio, equip_prov):
-                    cand = ciq_por_teste.get(mneu)
-                    if cand is None or cand.empty:
+                def sugere_equipamento(mneus, d_envio, equip_prov):
+                    partes = [ciq_por_teste[m] for m in mneus if m in ciq_por_teste]
+                    if not partes:
                         return ""
+                    cand = pd.concat(partes)
                     tipo = plataforma_do_provedor(equip_prov)
                     if tipo:
                         mesma_plat = cand[cand["Tipo"].astype(str).str.upper() == tipo]
@@ -2066,8 +2137,19 @@ with tab_ep:
                     cand = no_mes if not no_mes.empty else cand
                     return cand.groupby("Equipamento (nome)")["N"].sum().idxmax()
 
+                def indice_desvio(a):
+                    """ID: o ControlLab informa; no CAP sai dos limites de aceitação (|ID| > 1 = fora da faixa)."""
+                    if a["Provedor"] == "ControlLab":
+                        return a["SDI"] if pd.notna(a["SDI"]) else None
+                    rl, vd, li, ls = a["RL"], a["VD"], a.get("Lim Inf"), a.get("Lim Sup")
+                    if any(v is None or pd.isna(v) for v in (rl, vd, li, ls)):
+                        return None
+                    meia_faixa = (ls - vd) if rl >= vd else (vd - li)
+                    return (rl - vd) / meia_faixa if meia_faixa > 0 else None
+
                 rodadas = (mapeado.groupby(CHAVE_RODADA).agg(
                     Data=("Data Envio", "min"),
+                    Mneus=("Mneumonicos", "first"),
                     Teste_prov=("Teste Provedor", lambda s: "; ".join(sorted(set(s)))),
                     Equip_prov=("Equipamento Provedor", lambda s: "; ".join(sorted({x for x in s if x}))),
                     Amostras=("Especime", "nunique")).reset_index())
@@ -2076,114 +2158,116 @@ with tab_ep:
                     # escolhas que vieram no pacote; as salvas nesta sessão (arquivo local) valem por cima
                     salvas = (pd.concat([rodadas_pacote, salvas], ignore_index=True)
                               .drop_duplicates(CHAVE_RODADA, keep="last"))
-                rodadas = rodadas.merge(salvas, how="left", on=CHAVE_RODADA)
+                rodadas = rodadas.merge(salvas[CHAVE_RODADA + ["Equipamento"]], how="left", on=CHAVE_RODADA)
                 rodadas["Equipamento"] = rodadas["Equipamento"].fillna("")
                 rodadas["Origem"] = rodadas["Equipamento"].map(lambda e: "salvo" if e else "")
                 faltam = rodadas["Equipamento"] == ""
                 rodadas.loc[faltam, "Equipamento"] = [
-                    sugere_equipamento(r.Mneumonico, r.Data, r.Equip_prov) for r in rodadas[faltam].itertuples()]
+                    sugere_equipamento(r.Mneus, r.Data, r.Equip_prov) for r in rodadas[faltam].itertuples()]
                 rodadas.loc[faltam & (rodadas["Equipamento"] != ""), "Origem"] = "sugerido"
-                rodadas["Modo Viés"] = rodadas["Modo Viés"].fillna("").replace("", "Médio")
-                rodadas["Fórmula Sigma"] = rodadas["Fórmula Sigma"].fillna("").replace("", "Automático")
-                rodadas["Envio"] = rodadas["Data"].map(data_extenso_ep)
-                rodadas = rodadas.sort_values(["Data", "Provedor", "Programa", "Mneumonico"], ascending=[False, True, True, True])
+                rodadas["Mês"] = pd.to_datetime(rodadas["Data"])
+                rodadas = rodadas.sort_values(["Data", "Provedor", "Programa", "Mneumonico"],
+                                              ascending=[False, True, True, True])
 
-                st.divider()
-                st.markdown("**Rodadas e equipamento**")
-                st.caption(
-                    "Os relatórios não dizem em qual equipamento a amostra foi analisada: escolha o equipamento "
-                    "(o S.A. da planilha), o viés e a fórmula do Sigma de cada rodada. \"sugerido\" = escolhido pelo "
-                    "app (no ControlLab, pelo equipamento que o próprio arquivo informa; no CAP, o de maior volume de "
-                    "CIQ no mês). Clique em Salvar para gravar as escolhas."
-                )
-                with st.expander("ℹ Como escolher o viés e a fórmula do Sigma"):
-                    st.markdown(
-                        "**Viés da rodada** — quanto o laboratório se afasta do valor designado:\n"
-                        "- **Médio**: diferença entre a média dos resultados do laboratório e a média dos valores "
-                        "designados. Um viés só, aplicado igual a todos os níveis do CIQ. Bom quando as amostras da "
-                        "rodada têm concentrações parecidas.\n"
-                        "- **Regressão**: reta RL = b × VD + a com as amostras da rodada; o viés é lido na "
-                        "concentração de cada nível do CIQ. Melhor quando as amostras têm concentrações bem "
-                        "diferentes, porque o viés pode mudar com a concentração (ex.: é pequeno no nível baixo e "
-                        "grande no alto). Precisa de amostras com boa correlação (r próximo de 1).\n"
-                        f"- **Automático**: usa regressão quando a maior concentração da rodada é pelo menos "
-                        f"{ep_calculo.RAZAO_CONCENTRACAO_REGRESSAO:g}× a menor, há 3 amostras ou mais e "
-                        f"r ≥ {ep_calculo.R_MINIMO_REGRESSAO:g}; senão, viés médio.\n\n"
-                        "**Fórmula do Sigma** (lista \"σ abs / σ %\" da planilha):\n"
-                        "- **σ abs** = (Média CIQ × ETM% − |viés em unidade|) ÷ DP CIQ: o viés entra na unidade do "
-                        "exame (ex.: mg/dL), o mesmo valor para todos os níveis.\n"
-                        "- **σ %** = (ETM% − |viés %|) ÷ CV CIQ: o viés entra em %, proporcional à concentração.\n"
-                        "- **Automático**: σ abs quando alguma amostra da rodada está no cutoff do ETM absoluto ou "
-                        "abaixo (faixa em que a especificação é absoluta); senão σ %.\n\n"
-                        "Com viés por **regressão** as duas fórmulas dão o mesmo resultado. Em qualquer caso, quando "
-                        "a média do CIQ do nível está no cutoff ou abaixo, vale o ETM absoluto.\n\n"
-                        "**Pareamento amostra do EP × nível do CIQ** (qual CV entra no Sigma):\n"
-                        "- **Por concentração** (recomendado): cada amostra usa o nível de CIQ com média mais "
-                        "próxima do seu valor designado — o CV é o da mesma faixa em que o viés foi medido. Se o "
-                        "nível mais próximo ainda estiver longe (menos da metade ou mais do dobro), a amostra fica "
-                        "marcada: o Sigma é só indicativo, porque não há controle naquela faixa.\n"
-                        "- **Por posição** (como a planilha): amostra 1 → Nível 1, amostra 2 → Nível 2... Pode "
-                        "juntar concentrações muito diferentes (ex.: amostra de 130 com controle de 33).\n\n"
-                        "Em qualquer caso, **nenhuma amostra é descartada**: Bias %, ID e IZ são calculados para "
-                        "todas; o pareamento só decide qual CV entra no Sigma."
-                    )
-                # o pareamento só decide qual CV entra no Sigma — no modo simples (sem Sigma) não aparece
-                pareamento_ep = st.radio(
-                    "Pareamento amostra do EP × nível do CIQ", ep_calculo.PAREAMENTOS, horizontal=True,
-                    key="ep_pareamento",
-                    help="Por concentração: nível do CIQ com média mais próxima do valor designado (recomendado). "
-                         "Por posição: amostra 1 → Nível 1, amostra 2 → Nível 2 (como a planilha).",
-                ) if completo else ep_calculo.PAREAMENTOS[0]
-                fe1, fe2 = st.columns(2)
+                # ---- Filtros (só mudam o que é exibido; o cálculo é feito para todas as rodadas) ----
+                fe1, fe2, fe3 = st.columns(3)
                 f_prov_ep = fe1.multiselect("Provedor", sorted(rodadas["Provedor"].unique()), key="ep_f_prov")
-                f_teste_ep = fe2.multiselect("Teste (Infinity)", sorted(rodadas["Mneumonico"].unique()), key="ep_f_teste")
+                f_teste_ep = fe2.multiselect("Teste (Infinity)", sorted(rodadas["Mneumonico"].unique()),
+                                             key="ep_f_teste")
+                f_equip_ep = fe3.multiselect("Equipamento", sorted(e for e in rodadas["Equipamento"].unique() if e),
+                                             key="ep_f_equip")
+
+                # ---- Como o Sigma do EP é calculado (vale para todas as rodadas) ----
+                if completo:
+                    oc1, oc2, oc3 = st.columns(3)
+                    vies_ep = oc1.selectbox(
+                        "Viés usado no Sigma", list(OPCOES_VIES_EP), key="ep_vies",
+                        help="Médio (%): um viés só para a rodada. Regressão: o viés muda com a concentração. "
+                             "Automático: o app escolhe por rodada (veja \"O que escolher\").")
+                    formula_ep = oc2.selectbox(
+                        "Fórmula do Sigma", list(OPCOES_FORMULA_EP), key="ep_formula",
+                        help="σ %: viés e CV em %. σ absoluto: viés e DP na unidade do exame. Automático: σ absoluto "
+                             "quando há amostra abaixo do cutoff do ETM absoluto.")
+                    pareamento_ep = oc3.selectbox(
+                        "Amostra × nível do CIQ", ep_calculo.PAREAMENTOS, key="ep_pareamento",
+                        help="Por concentração: nível do CIQ com média mais próxima do valor designado. "
+                             "Por posição: amostra 1 → nível 1, amostra 2 → nível 2 (como a planilha).")
+                    with st.expander("ℹ O que escolher"):
+                        st.markdown(
+                            "**Viés usado no Sigma**\n"
+                            "- **Médio (%)**: (média dos resultados do laboratório − média dos valores designados) ÷ "
+                            "média dos valores designados × 100. Um viés só, igual para todos os níveis do CIQ. Use "
+                            "quando as amostras da rodada têm concentrações parecidas.\n"
+                            "- **Regressão**: reta resultado × valor designado com as amostras da rodada; o viés é "
+                            "lido na concentração de cada nível do CIQ. Use quando as concentrações são bem "
+                            "diferentes, porque o viés pode mudar com a concentração. Precisa de 3 amostras ou mais "
+                            f"e boa correlação (r ≥ {ep_calculo.R_MINIMO_REGRESSAO:g}).\n"
+                            f"- **Automático** (recomendado): regressão quando a maior concentração da rodada é "
+                            f"≥ {ep_calculo.RAZAO_CONCENTRACAO_REGRESSAO:g}× a menor, há 3 amostras ou mais e "
+                            f"r ≥ {ep_calculo.R_MINIMO_REGRESSAO:g}; senão, médio.\n\n"
+                            "**Fórmula do Sigma**\n"
+                            "- **σ %** = (ETM % − |viés %|) ÷ CV % do CIQ. Serve para a maioria dos testes.\n"
+                            "- **σ absoluto** = (ETM % × média do CIQ − |viés na unidade|) ÷ DP do CIQ. Use quando o "
+                            "teste tem ETM absoluto (concentrações baixas, abaixo do cutoff).\n"
+                            "- **Automático** (recomendado): σ absoluto quando alguma amostra da rodada está no cutoff "
+                            "do ETM absoluto ou abaixo; senão σ %.\n\n"
+                            "Com viés por regressão as duas fórmulas dão o mesmo resultado. Quando a média do CIQ do "
+                            "nível está no cutoff ou abaixo, vale sempre o ETM absoluto.\n\n"
+                            "**Amostra × nível do CIQ** (qual CV entra no Sigma)\n"
+                            "- **Por concentração** (recomendado): cada amostra usa o nível do CIQ com média mais "
+                            "próxima do seu valor designado — o CV é o da mesma faixa em que o viés foi medido.\n"
+                            "- **Por posição** (como a planilha): amostra 1 → nível 1, amostra 2 → nível 2..."
+                        )
+                else:
+                    vies_ep, formula_ep, pareamento_ep = "Automático", "Automático", ep_calculo.PAREAMENTOS[0]
+
                 vis = rodadas
                 if f_prov_ep:
                     vis = vis[vis["Provedor"].isin(f_prov_ep)]
                 if f_teste_ep:
                     vis = vis[vis["Mneumonico"].isin(f_teste_ep)]
+                if f_equip_ep:
+                    vis = vis[vis["Equipamento"].isin(f_equip_ep)]
+
+                st.markdown("**Rodadas e equipamento**")
+                st.caption(
+                    "Os relatórios não dizem em qual equipamento a amostra foi analisada: confira o equipamento de "
+                    "cada rodada (\"sugerido\" = escolhido pelo app, pelo equipamento informado pelo provedor ou pelo "
+                    "de maior volume de CIQ no mês) e clique em Salvar."
+                )
                 opcoes_equip = [""] + sorted(df_ciq_total["Equipamento (nome)"].dropna().astype(str).unique())
-                colunas_editor = ["Envio", "Provedor", "Programa", "Rodada", "Mneumonico", "Teste_prov", "Sistema",
-                                  "Equip_prov", "Amostras", "Equipamento", "Modo Viés", "Fórmula Sigma", "Origem"]
-                if not completo:   # sem Sigma no modo simples: a fórmula não aparece (fica a que estava)
-                    colunas_editor.remove("Fórmula Sigma")
-                editaveis = ("Equipamento", "Modo Viés", "Fórmula Sigma")
+                colunas_editor = ["Mês", "Provedor", "Programa", "Mneumonico", "Teste_prov", "Sistema", "Equip_prov",
+                                  "Amostras", "Equipamento", "Origem"]
+                vis = vis.reset_index(drop=True)
+                # a chave muda com os filtros: a edição não "escorrega" para outra linha quando a lista muda
+                chave_editor = "ep_editor|" + "|".join(["/".join(f_prov_ep), "/".join(f_teste_ep), "/".join(f_equip_ep)])
                 editado = st.data_editor(
-                    vis[colunas_editor].reset_index(drop=True), key="ep_editor", hide_index=True,
-                    use_container_width=True, height=380,
-                    disabled=[c for c in colunas_editor if c not in editaveis],
+                    vis[colunas_editor], key=chave_editor, hide_index=True, use_container_width=True, height=300,
+                    disabled=[c for c in colunas_editor if c != "Equipamento"],
                     column_config={
+                        "Mês": st.column_config.DateColumn("Mês", format="MM/YYYY"),
                         "Mneumonico": st.column_config.TextColumn("Teste (Infinity)"),
                         "Teste_prov": st.column_config.TextColumn("Teste no provedor"),
                         "Equip_prov": st.column_config.TextColumn("Equip. informado"),
                         "Equipamento": st.column_config.SelectboxColumn("Equipamento (S.A.)", options=opcoes_equip),
-                        "Modo Viés": st.column_config.SelectboxColumn("Viés", options=ep_calculo.MODOS_VIES),
-                        "Fórmula Sigma": st.column_config.SelectboxColumn("Fórmula Sigma",
-                                                                          options=ep_calculo.FORMULAS_SIGMA),
                     },
                 )
-                if "Fórmula Sigma" not in editado.columns:
-                    editado["Fórmula Sigma"] = vis["Fórmula Sigma"].to_numpy()
-                escolhas_atuais =(pd.concat([salvas, editado[editado["Equipamento"] != ""][CHAVE_RODADA + list(editaveis)]],
-                                             ignore_index=True).drop_duplicates(CHAVE_RODADA, keep="last"))
-                cs1, cs2 = st.columns(2)
-                if cs1.button("Salvar escolhas de equipamento/viés/fórmula", key="ep_salvar_rodadas"):
+                vis["Equipamento"] = editado["Equipamento"].to_numpy()
+                escolhas_atuais = (pd.concat([salvas, vis[vis["Equipamento"] != ""][CHAVE_RODADA + ["Equipamento"]]],
+                                             ignore_index=True).drop_duplicates(CHAVE_RODADA, keep="last")
+                                   .reindex(columns=ep_base.COLUNAS_RODADAS).fillna(""))
+                if st.button("Salvar equipamentos", key="ep_salvar_rodadas"):
                     ep_base.grava_rodadas(escolhas_atuais)
-                    st.success(f"{len(escolhas_atuais)} escolha(s) gravada(s) em dados_ep/ep_rodadas.csv."
-                               + (" No app online elas valem só nesta sessão: baixe o pacote de EP para guardá-las."
-                                  if app_online else ""))
-                cs2.download_button(
-                    "📦 Baixar pacote de EP (.zip)", ep_base.monta_pacote(base_ep, escolhas_atuais, depara_pacote),
-                    f"pacote_ep_{pd.Timestamp.today():%Y-%m-%d}.zip", "application/zip", key="ep_baixar_pacote",
-                    help="Base de EP + as escolhas desta tabela. Suba este arquivo na barra lateral do app online "
-                         "(ou guarde como cópia de segurança).")
+                    st.success(f"{len(escolhas_atuais)} escolha(s) gravada(s)."
+                               + (" No app online elas valem só nesta sessão: para guardá-las, baixe o pacote de EP "
+                                  "na aba ⚙️ Atualizar base." if app_online else ""))
 
-                # ---- 4. Resultados ----
+                # ---- Resultados ----
                 grupos_ep = {k: g for k, g in mapeado.groupby(CHAVE_RODADA)}
                 linhas_res, resumo_res = [], []
-                # calcula todas as rodadas (com as edições da tabela) — o filtro acima só muda o que é exibido
+                # calcula todas as rodadas (com as edições da tabela) — os filtros só mudam o que é exibido
                 todas_rodadas = rodadas.set_index(CHAVE_RODADA)
-                todas_rodadas.update(editado.set_index(CHAVE_RODADA)[list(editaveis)])
+                todas_rodadas.update(vis.set_index(CHAVE_RODADA)[["Equipamento"]])
                 for rd in todas_rodadas.reset_index().to_dict("records"):
                     g = grupos_ep.get(tuple(rd[c] for c in CHAVE_RODADA))
                     if g is None:
@@ -2194,164 +2278,136 @@ with tab_ep:
                     amostras = [{"Especime": a["Especime"], "Num": a["Num"], "RL": a["RL"] * a["Fator"],
                                  "VD": a["VD"] * a["Fator"], "Qualificador": a["Qualificador"],
                                  "DP Grupo": a["DP Grupo"] * a["Fator"] if pd.notna(a["DP Grupo"]) else None,
-                                 "Índice Provedor": a["SDI"] if pd.notna(a["SDI"]) else None}
+                                 "Índice Provedor": indice_desvio(a)}
                                 for a in g.to_dict("records")]
                     d_envio = g["Data Envio"].iloc[0]
-                    niveis = ciq_nivel.get((rd["Mneumonico"], rd["Equipamento"], d_envio.year, d_envio.month))
+                    niveis = next((ciq_nivel[k] for k in ((m, rd["Equipamento"], d_envio.year, d_envio.month)
+                                                          for m in rd["Mneus"]) if k in ciq_nivel), None)
                     ciq_rodada, spec = {}, None
                     if niveis is not None:
                         for _, n in niveis.iterrows():
                             ciq_rodada[int(n["NívelNum"])] = {"Média": n["Média"], "CV (%)": n["CV (%)"]}
                         spec = next((s for s in niveis["Spec"] if isinstance(s, dict)), None)
-                    linhas, info = ep_calculo.calcula_rodada(amostras, ciq_rodada, spec, rd["Modo Viés"] or "Médio",
-                                                             rd["Fórmula Sigma"] or "Automático", pareamento_ep)
-                    esm_rodada = (spec or spec_por_teste.get(rd["Mneumonico"]) or {}).get("ESM (%)")
+                    linhas, info = ep_calculo.calcula_rodada(amostras, ciq_rodada, spec, OPCOES_VIES_EP[vies_ep],
+                                                             OPCOES_FORMULA_EP[formula_ep], pareamento_ep)
+                    spec_teste = spec or next((spec_por_teste[m] for m in rd["Mneus"] if spec_por_teste.get(m)), None)
                     izs = [abs(l["IZ"]) for l in linhas if l["IZ"] is not None]
-                    base_linha = {"Envio": data_extenso_ep(d_envio), "_data": d_envio, "Provedor": rd["Provedor"],
+                    base_linha = {"Mês": pd.Timestamp(d_envio), "_data": d_envio, "Provedor": rd["Provedor"],
                                   "Programa": rd["Programa"], "Rodada": rd["Rodada"], "Teste": rd["Mneumonico"],
                                   "Sistema": rd["Sistema"], "Equipamento": rd["Equipamento"] or "—"}
                     for l in linhas:
-                        linhas_res.append({**base_linha, **l, "Viés usado": info["Modo usado"] or "—"})
+                        linhas_res.append({**base_linha, **l})
                     sigmas = [l["Sigma EP"] for l in linhas if l["Sigma EP"] is not None]
-                    eq = (f"RL = {info['b']:.3f} × VD {'+' if info['a'] >= 0 else '−'} {abs(info['a']):.3f}"
-                          if info["b"] is not None else "")
-                    resumo_res.append({**base_linha, "Viés usado": info["Modo usado"] or "—",
-                                       "Fórmula usada": info["Fórmula usada"] or "—", "Equação": eq,
-                                       "r": info["r"], "Viés médio (%)": info["Viés médio %"],
+                    resumo_res.append({**base_linha, "Viés médio (%)": info["Viés médio %"],
                                        "Pior |IZ|": max(izs) if izs else None,
-                                       "Análise da rodada": ep_calculo.analisa_rodada(linhas, info, esm_rodada),
                                        "Pior Sigma EP": min(sigmas) if sigmas else None,
-                                       "CIQ no mês": "sim" if ciq_rodada else "não",
-                                       "Escolha automática": info["Motivo"], "Aviso": info["Aviso"] or ""})
+                                       "ESM (%)": (spec_teste or {}).get("ESM (%)")})
 
                 res_ep_global = pd.DataFrame(linhas_res)
-                resumo = pd.DataFrame(resumo_res)
-                resumo_total = resumo   # sem os filtros de provedor/teste (histórico)
+                resumo_total = pd.DataFrame(resumo_res)
                 res = res_ep_global
                 if f_prov_ep and not res.empty:
-                    res, resumo = res[res["Provedor"].isin(f_prov_ep)], resumo[resumo["Provedor"].isin(f_prov_ep)]
+                    res = res[res["Provedor"].isin(f_prov_ep)]
                 if f_teste_ep and not res.empty:
-                    res, resumo = res[res["Teste"].isin(f_teste_ep)], resumo[resumo["Teste"].isin(f_teste_ep)]
+                    res = res[res["Teste"].isin(f_teste_ep)]
+                if f_equip_ep and not res.empty:
+                    res = res[res["Equipamento"].isin(f_equip_ep)]
+
                 st.divider()
-                if completo and not resumo.empty:
-                    ep_teste = resumo[(resumo["Teste"] == str(teste_global).upper()) & resumo["Pior Sigma EP"].notna()]
-                    if not ep_teste.empty:
-                        pior = ep_teste.loc[ep_teste["Pior Sigma EP"].idxmin()]
+                if completo and not res.empty:
+                    ep_t = res[(res["Teste"] == str(teste_global).upper()) & res["Sigma EP"].notna()]
+                    if not ep_t.empty:
+                        pior = ep_t.loc[ep_t["Sigma EP"].idxmin()]
                         with st.container(border=True):
                             st.caption(f"Pior Sigma do EP no período — {teste_global} (separado do pior cenário do CIQ)")
-                            st.markdown(f"<span style='font-size:30px; font-weight:700;'>{pior['Pior Sigma EP']:.2f}</span>",
+                            st.markdown(f"<span style='font-size:30px; font-weight:700;'>{pior['Sigma EP']:.2f}</span>",
                                         unsafe_allow_html=True)
-                            st.caption(f"{pior['Provedor']} · {pior['Programa']} · {pior['Envio']} · {pior['Equipamento']}")
+                            st.caption(f"{pior['Provedor']} · {pior['Programa']} · {mes_ano_ep(pior['_data'])} · "
+                                       f"{pior['Equipamento']} · amostra {pior['Especime']}")
 
                 st.markdown("**Resultados por amostra**")
                 if res.empty:
                     st.info("Nenhum resultado para os filtros escolhidos.")
                 else:
-                    def cor_iz(v):
-                        if pd.isna(v):
-                            return ""
-                        if abs(v) > ep_calculo.LIMITE_IZ_ACAO:
-                            return "background-color: #F4CCCC"
-                        return "background-color: #FFF2CC" if abs(v) > ep_calculo.LIMITE_IZ_ALERTA else ""
-
-                    # Sigma logo depois do Bias, pra não precisar rolar a tabela pro lado
-                    cols_res = ["Envio", "Provedor", "Teste", "Equipamento", "Especime", "RL", "VD", "Bias % amostra",
+                    cols_res = ["Mês", "Provedor", "Teste", "Equipamento", "Especime", "RL", "VD", "Bias % amostra",
                                 "Índice Provedor", "IZ"]
                     if completo:
-                        cols_res += ["Sigma EP", "Nível CIQ", "Média CIQ", "VD/Média CIQ", "Nível longe", "CV CIQ (%)",
-                                     "Viés %", "Critério Sigma", "Viés usado"]
-                    cols_res += ["Programa", "Rodada", "Posição", "Qualificador"]
-                    tabela_res = res[cols_res]
-                    fmt = {c: "{:.2f}" for c in ["Bias % amostra", "Índice Provedor", "IZ", "Média CIQ", "VD/Média CIQ",
-                                                 "CV CIQ (%)", "Viés %", "Sigma EP"] if c in cols_res}
-                    estilo = tabela_res.style.format(fmt, na_rep="—").map(cor_iz, subset=["IZ"])
-                    if completo:
-                        estilo = estilo.map(cor_sigma, subset=["Sigma EP"])
-                    st.dataframe(estilo, hide_index=True, use_container_width=True, height=420)
-                    st.caption("Índice Provedor = índice informado pelo provedor (ID do ControlLab, S.D.I. do CAP). "
-                               "IZ = (RL − VD) ÷ DP do grupo: 🟨 |IZ| > 2 questionável · 🟥 |IZ| > 3 insatisfatório."
-                               + (" \"Nível longe\" = o controle mais próximo está a menos da metade ou mais do dobro "
-                                  "da concentração da amostra (Sigma indicativo)." if completo else ""))
-
-                    st.markdown("**Resumo por rodada**")
-                    cols_resumo = ["Envio", "Provedor", "Teste", "Equipamento", "Viés usado", "Viés médio (%)",
-                                   "Pior |IZ|", "Análise da rodada"]
-                    if completo:
-                        cols_resumo += ["Pior Sigma EP", "Fórmula usada", "Equação", "r", "CIQ no mês",
-                                        "Escolha automática"]
-                    cols_resumo += ["Programa", "Rodada", "Aviso"]
-                    estilo_r = resumo[cols_resumo].style.format(
-                        {c: "{:.2f}" for c in ["Viés médio (%)", "Pior |IZ|", "Pior Sigma EP"] if c in cols_resumo} | (
-                            {"r": "{:.4f}"} if completo else {}), na_rep="—").map(cor_iz, subset=["Pior |IZ|"])
-                    if completo:
-                        estilo_r = estilo_r.map(cor_sigma, subset=["Pior Sigma EP"])
-                    st.dataframe(estilo_r, hide_index=True, use_container_width=True)
-
-                    fato = res.drop(columns=["_data"]).assign(**{"Ano": res["_data"].map(lambda d: d.year),
-                                                                  "Mês": res["_data"].map(lambda d: d.month)})
-                    c1, c2 = st.columns(2)
-                    c1.download_button("Baixar Fato_EP (CSV)", fato.to_csv(index=False).encode("utf-8-sig"),
-                                       "fato_ep.csv", "text/csv")
-                    if c2.button("Gravar Fato_EP para o Power BI", key="ep_fato"):
-                        ep_base.PASTA_DADOS.mkdir(exist_ok=True)
-                        fato.to_csv(ep_base.PASTA_DADOS / "fato_ep.csv", index=False, encoding="utf-8-sig")
-                        st.success("Gravado em dados_ep/fato_ep.csv.")
+                        cols_res += ["Sigma EP", "CV CIQ (%)", "Viés %"]
+                    cols_res += ["Programa", "Rodada"]
+                    fmt = {c: "{:.2f}" for c in ["Bias % amostra", "Índice Provedor", "IZ", "CV CIQ (%)", "Viés %",
+                                                 "Sigma EP"] if c in cols_res}
+                    estilo = (res[cols_res].style.format(fmt, na_rep="—")
+                              .map(lambda v: cor_limite_ep(v, ep_calculo.LIMITE_ID), subset=["Índice Provedor"])
+                              .map(lambda v: cor_limite_ep(v, ep_calculo.LIMITE_IZ_ALERTA), subset=["IZ"]))
+                    st.dataframe(estilo, hide_index=True, use_container_width=True, height=420, column_config={
+                        "Mês": st.column_config.DateColumn("Mês", format="MM/YYYY"),
+                        "Especime": "Amostra", "Bias % amostra": "Bias %", "Índice Provedor": "ID",
+                        "IZ": "Z grupo", "Viés %": "Viés % (Sigma)"})
+                    st.caption(
+                        "**Bias %** = (resultado − valor designado) ÷ valor designado, da própria amostra. "
+                        "**ID** = índice de desvio (ControlLab: o que eles informam; CAP: calculado pelos limites de "
+                        "aceitação) — 🟩 |ID| ≤ 1 dentro da faixa aceita · 🟥 |ID| > 1 fora. "
+                        "**Z grupo** = (resultado − média do grupo) ÷ DP do grupo — 🟩 |Z| ≤ 2 · 🟥 |Z| > 2."
+                        + (" **Viés % (Sigma)** = viés da rodada usado no Sigma (médio ou da regressão, conforme a "
+                           "escolha acima)." if completo else ""))
+                    tabela_csv = (res[cols_res].assign(Mês=res["_data"].map(mes_ano_ep))
+                                  .rename(columns={"Especime": "Amostra", "Bias % amostra": "Bias %",
+                                                   "Índice Provedor": "ID", "IZ": "Z grupo",
+                                                   "Viés %": "Viés % (Sigma)"}))
+                    st.download_button("⬇ Baixar esta tabela (CSV, abre no Excel)",
+                                       tabela_csv.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
+                                       "ep_resultados.csv", "text/csv")
 
         # ---- Histórico do teste: tendência entre rodadas (sem os filtros da aba de resultados) ----
         with ep_tab_hist:
-            if mapeado.empty or resumo_total.empty:
+            if resumo_total.empty:
                 st.info("Nenhuma rodada com teste correlacionado no período selecionado.")
             else:
-                st.markdown("**Histórico do teste — tendência entre as rodadas**")
+                h1, h2 = st.columns([2, 1])
                 testes_hist = sorted(resumo_total["Teste"].unique())
                 padrao_hist = str(teste_global).upper()
-                teste_hist = st.selectbox(
-                    "Teste", testes_hist, key="ep_hist_teste",
-                    index=testes_hist.index(padrao_hist) if padrao_hist in testes_hist else 0)
-                hist = resumo_total[resumo_total["Teste"] == teste_hist].sort_values("_data")
+                teste_hist = h1.selectbox("Teste", testes_hist, key="ep_hist_teste",
+                                          index=testes_hist.index(padrao_hist) if padrao_hist in testes_hist else 0)
+                prov_hist = h2.radio("Provedor", ["Todos", "ControlLab", "CAP"], horizontal=True, key="ep_hist_prov")
+                hist = resumo_total[resumo_total["Teste"] == teste_hist]
                 am_hist = res_ep_global[res_ep_global["Teste"] == teste_hist]
-                esm_hist = (spec_por_teste.get(teste_hist) or {}).get("ESM (%)")
-                alertas = ep_calculo.analisa_historico(
-                    [{"Rótulo": f"{r['Provedor']} {r['Envio']}", "Viés %": r["Viés médio (%)"],
-                      "Pior |IZ|": r["Pior |IZ|"]} for r in hist.to_dict("records")])
-                for alerta in alertas:
-                    grave = any(p in alerta for p in ("persistente", "piora", "investigar"))
-                    (st.warning if grave else st.info)(alerta)
-                if not alertas:
-                    st.caption("Poucas rodadas para avaliar tendência (são necessárias pelo menos 2).")
+                if prov_hist != "Todos":
+                    hist, am_hist = hist[hist["Provedor"] == prov_hist], am_hist[am_hist["Provedor"] == prov_hist]
+                hist = hist.sort_values("_data")
+                if hist.empty:
+                    st.info(f"Sem rodadas do {prov_hist} para {teste_hist} no período.")
+                else:
+                    alertas = ep_calculo.analisa_historico(
+                        [{"Rótulo": f"{r['Provedor']} {mes_ano_ep(r['_data'])}", "Viés %": r["Viés médio (%)"],
+                          "Pior |IZ|": r["Pior |IZ|"]} for r in hist.to_dict("records")])
+                    for alerta in alertas:
+                        grave = any(p in alerta for p in ("persistente", "piora", "investigar"))
+                        (st.warning if grave else st.info)(alerta)
+                    if not alertas:
+                        st.caption("Poucas rodadas para avaliar tendência (são necessárias pelo menos 2).")
 
-                g1, g2 = st.columns(2)
-                fig_v = go.Figure()
-                for i, (prov, gp) in enumerate(am_hist.groupby("Provedor")):
-                    fig_v.add_trace(go.Scatter(
-                        x=gp["_data"], y=gp["Bias % amostra"], mode="markers", name=f"{prov} (amostra)",
-                        marker=dict(size=8, color=PALETA[(i + 2) % len(PALETA)],
-                                    symbol="circle" if prov == "ControlLab" else "diamond"),
-                        text=gp["Especime"], hovertemplate="%{x}<br>%{text}: %{y:.1f}%<extra></extra>"))
-                fig_v.add_trace(go.Scatter(x=hist["_data"], y=hist["Viés médio (%)"], mode="lines+markers",
-                                           name="Viés médio da rodada", line=dict(color=PALETA[0], width=2)))
-                fig_v.add_hline(y=0, line=dict(color="#999999", width=1))
-                if pd.notna(esm_hist):
-                    for s in (1, -1):
-                        fig_v.add_hline(y=s * esm_hist, line=dict(color="red", width=1.2, dash="dash"),
-                                        annotation_text="ESM" if s == 1 else None)
-                fig_v.update_layout(title="Viés (%) por rodada", yaxis_title="Viés (%)", height=360,
-                                    legend=dict(orientation="h", y=-0.2), margin=dict(t=40))
-                g1.plotly_chart(fig_v, use_container_width=True)
-                fig_z = go.Figure()
-                for i, (prov, gp) in enumerate(am_hist.groupby("Provedor")):
-                    fig_z.add_trace(go.Scatter(
-                        x=gp["_data"], y=gp["IZ"], mode="markers", name=prov,
-                        marker=dict(size=8, color=PALETA[(i + 2) % len(PALETA)],
-                                    symbol="circle" if prov == "ControlLab" else "diamond"),
-                        text=gp["Especime"], hovertemplate="%{x}<br>%{text}: IZ %{y:.2f}<extra></extra>"))
-                for lim, cor in ((ep_calculo.LIMITE_IZ_ALERTA, "orange"), (ep_calculo.LIMITE_IZ_ACAO, "red")):
-                    for s in (1, -1):
-                        fig_z.add_hline(y=s * lim, line=dict(color=cor, width=1.2, dash="dash"))
-                fig_z.add_hline(y=0, line=dict(color="#999999", width=1))
-                fig_z.update_layout(title="Índice Z (IZ) por amostra", yaxis_title="IZ", height=360,
-                                    legend=dict(orientation="h", y=-0.2), margin=dict(t=40))
-                g2.plotly_chart(fig_z, use_container_width=True)
+                    esm_hist = next((e for e in hist["ESM (%)"] if pd.notna(e)), None)
+                    g1, g2, g3 = st.columns(3)
+                    g1.plotly_chart(grafico_historico_ep(am_hist, "Índice Provedor", "Índice de Desvio (ID)",
+                                                         faixa=ep_calculo.LIMITE_ID), use_container_width=True)
+                    g2.plotly_chart(grafico_historico_ep(am_hist, "IZ", "Índice Z (grupo de comparação)",
+                                                         faixa=ep_calculo.LIMITE_IZ_ALERTA,
+                                                         limite_vermelho=ep_calculo.LIMITE_IZ_ACAO),
+                                    use_container_width=True)
+                    g3.plotly_chart(grafico_historico_ep(am_hist, "Bias % amostra", "Viés (%) por amostra",
+                                                         faixa=esm_hist, eixo_minimo=None, rotulo_faixa="ESM"),
+                                    use_container_width=True)
+                    st.caption("Cada cor é uma amostra da rodada (1ª, 2ª, 3ª...); ◆ ControlLab · ● CAP. A linha cinza "
+                               "liga a média das amostras de cada rodada. Faixa verde: ID ±1, Z ±2 e viés dentro do ESM.")
+
+        # pacote de EP (base + escolhas de equipamento): para o app online, que não guarda nada
+        with ep_tab_base:
+            st.divider()
+            st.download_button(
+                "📦 Baixar pacote de EP (.zip)", ep_base.monta_pacote(base_ep, escolhas_atuais, depara_pacote),
+                f"pacote_ep_{pd.Timestamp.today():%Y-%m-%d}.zip", "application/zip", key="ep_baixar_pacote",
+                help="Base de EP + os equipamentos escolhidos na aba Rodadas e resultados. É o arquivo que se sobe "
+                     "na barra lateral do app online (ou para guardar uma cópia de segurança).")
 
 # ---------------- SIGMA POR PERÍODO ----------------
 if completo:
@@ -2490,12 +2546,8 @@ if completo:
                               ep_teste["Nível CIQ"])],
                     hovertemplate="%{x}<br>Sigma EP: %{y:.2f}<br>%{text}<extra></extra>",
                 ))
-                # meses do CIQ e do EP na ordem do tempo (senão o mês só do EP vai pro fim do eixo)
-                meses_eixo = (pd.concat([serie_pior[["Mês/Ano", "_ordem_tempo"]], ep_teste[["Mês/Ano", "_ordem_tempo"]]])
-                              .drop_duplicates().sort_values("_ordem_tempo")["Mês/Ano"].tolist())
-                fig_sigma_mes.update_xaxes(categoryorder="array", categoryarray=meses_eixo)
             fig_sigma_mes.update_layout(
-                xaxis_title="Mês/Ano", yaxis_title="Sigma",
+                xaxis_title="Mês/Ano", **EIXO_MESES, yaxis_title="Sigma",
                 height=420, hovermode="x unified",
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
                 margin=dict(t=60),
@@ -2558,11 +2610,12 @@ if completo:
             f_teste_p = pf2.multiselect("Teste", sorted(base_mensal["Teste"].dropna().unique()), key="periodo_teste")
             if f_teste_p:
                 base_mensal = base_mensal[base_mensal["Teste"].isin(f_teste_p)]
+            base_mensal["Mês/Ano"] = pd.to_datetime(dict(year=base_mensal["Ano"], month=base_mensal["Mês"], day=1))
             df_p = (base_mensal[["Teste", "Equipamento (nome)", "NívelNum", "Ano", "Mês/Ano",
                                   "Sigma Mensal", "CV (%)", "Bias (%)"]]
                     .rename(columns={"Equipamento (nome)": "Equipamento", "NívelNum": "Nível",
                                       "Sigma Mensal": "Sigma (pior cenário)", "Mês/Ano": "Sub-período"}))
-            df_p = df_p.sort_values(["Teste", "Equipamento", "Nível", "Ano"])
+            df_p = df_p.sort_values(["Teste", "Equipamento", "Nível", "Sub-período"])
             df_p["Nível"] = df_p["Nível"].astype(int)
         else:
             f_teste_p = pf2.multiselect("Teste", sorted(df_per_filtrado["Teste"].dropna().unique()), key="periodo_teste")
@@ -2574,7 +2627,9 @@ if completo:
         cols_numericas = [c for c in ["Sigma (pior cenário)", "CV (%)", "Bias (%)"] if c in df_p.columns]
         styler_p = (df_p.style.map(cor_sigma, subset=["Sigma (pior cenário)"])
                     .format("{:.2f}", subset=cols_numericas, na_rep="—"))
-        st.dataframe(styler_p, hide_index=True, use_container_width=True, height=500)
+        st.dataframe(styler_p, hide_index=True, use_container_width=True, height=500,
+                     column_config={"Sub-período": st.column_config.DateColumn("Mês", format="MM/YYYY")}
+                     if periodo_sel == "Mensal" else None)
         caption_extra = " (aqui é o Sigma do mês mesmo, não um pior cenário agregado)" if periodo_sel == "Mensal" else ""
         st.caption(
             f"🟥 Sigma < 3 (inaceitável) · 🟨 Sigma entre 3 e 6 (aceitável/precisa melhorar) · "

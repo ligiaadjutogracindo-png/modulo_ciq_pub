@@ -212,7 +212,8 @@ def calcula_rodada(amostras, ciq_por_nivel, spec, modo="Médio", formula="Autom�
 # ------------------------------------------------------------------
 # Análises de tendência
 # ------------------------------------------------------------------
-LIMITE_IZ_ALERTA, LIMITE_IZ_ACAO = 2.0, 3.0      # |IZ| (escore z) — critérios usuais da ISO 13528
+LIMITE_IZ_ALERTA, LIMITE_IZ_ACAO = 2.0, 3.0      # |Z grupo| (escore z) — critérios usuais da ISO 13528
+LIMITE_ID = 1.0                                  # |ID| > 1: fora da faixa aceita pelo provedor
 
 
 def analisa_rodada(linhas, info, esm_pct=None):
@@ -245,9 +246,9 @@ def analisa_rodada(linhas, info, esm_pct=None):
     if izs:
         pior = max(izs)
         if pior > LIMITE_IZ_ACAO:
-            msgs.append(f"|IZ| {pior:.1f} > {LIMITE_IZ_ACAO:g} — resultado insatisfatório")
+            msgs.append(f"|Z grupo| {pior:.1f} > {LIMITE_IZ_ACAO:g} — resultado insatisfatório")
         elif pior > LIMITE_IZ_ALERTA:
-            msgs.append(f"|IZ| {pior:.1f} > {LIMITE_IZ_ALERTA:g} — resultado questionável")
+            msgs.append(f"|Z grupo| {pior:.1f} > {LIMITE_IZ_ALERTA:g} — resultado questionável")
     return "; ".join(msgs) or "sem padrão de erro na rodada"
 
 
@@ -276,5 +277,5 @@ def analisa_historico(rodadas):
     izs = [r.get("Pior |IZ|") for r in rodadas[-3:] if _valido(r.get("Pior |IZ|"))]
     altos = sum(1 for z in izs if z > LIMITE_IZ_ALERTA)
     if altos >= 2:
-        alertas.append(f"|IZ| > {LIMITE_IZ_ALERTA:g} em {altos} das últimas {len(izs)} rodadas — investigar")
+        alertas.append(f"|Z grupo| > {LIMITE_IZ_ALERTA:g} em {altos} das últimas {len(izs)} rodadas — investigar")
     return alertas

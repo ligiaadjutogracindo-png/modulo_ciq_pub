@@ -47,7 +47,7 @@ PARTICIPANTES_CONTROLLAB = {"779"}   # 779 = Brasília (mesmo laboratório dos r
 
 COLUNAS = ["Provedor", "Programa", "Rodada", "Data Envio", "Teste Provedor", "Unidade", "Grupo", "Sistema",
            "Equipamento Provedor", "ID Equipamento", "Especime", "Num", "Qualificador", "RL", "VD",
-           "DP Grupo", "N Labs", "SDI", "Nota", "Data Avaliação", "Arquivo"]
+           "DP Grupo", "N Labs", "SDI", "Nota", "Data Avaliação", "Arquivo", "Lim Inf", "Lim Sup"]
 CHAVE = ["Provedor", "Programa", "Rodada", "Teste Provedor", "Unidade", "Grupo", "Sistema", "Especime"]
 TEXTO = ["Provedor", "Programa", "Rodada", "Teste Provedor", "Unidade", "Grupo", "Sistema",
          "Equipamento Provedor", "ID Equipamento", "Especime", "Qualificador", "Nota", "Arquivo"]
@@ -111,6 +111,11 @@ def ler_controllab(csv_bytes, nome_arquivo=""):
         if exp:
             rl, vd = rl * 10 ** exp, vd * 10 ** exp
         sinal = str(r.get("SINAL") or "").strip()
+        # faixa aceita ("9.1 a 13.7"): limites de aceitação, na mesma escala do resultado
+        faixa = [_num(x) for x in re.split(r"\s+a\s+", str(r.get("RESULTADO_ACEITO") or "").strip())]
+        lim_inf, lim_sup = (faixa if len(faixa) == 2 and None not in faixa else (None, None))
+        if exp and lim_inf is not None:
+            lim_inf, lim_sup = lim_inf * 10 ** exp, lim_sup * 10 ** exp
         linhas.append({
             "Provedor": "ControlLab", "Programa": r.get("MODULO"), "Rodada": r.get("NOME_ENVIO"),
             "Data Envio": _data_envio_controllab(r.get("NOME_ENVIO"), r.get("DATA_AVA")),
@@ -122,6 +127,7 @@ def ler_controllab(csv_bytes, nome_arquivo=""):
             "RL": rl, "VD": vd, "DP Grupo": _num(r.get("DP")), "N Labs": _num(r.get("QTD_DADOS")),
             "SDI": _num(r.get("INDICE_DESVIO")), "Nota": r.get("AVA"),
             "Data Avaliação": r.get("DATA_AVA"), "Arquivo": nome_arquivo,
+            "Lim Inf": lim_inf, "Lim Sup": lim_sup,
         })
     return linhas
 
@@ -142,7 +148,7 @@ def ler_cap(pdf_bytes, nome_arquivo="", pdftotext="pdftotext"):
             "Qualificador": r["Qualificador"], "RL": r["RL"], "VD": r["VD"], "DP Grupo": r["DP Grupo"],
             "N Labs": r["N Labs"], "SDI": r["SDI"], "Nota": r["Nota"],
             "Data Avaliação": r["Data Avaliação"].isoformat() if r.get("Data Avaliação") else "",
-            "Arquivo": nome_arquivo,
+            "Arquivo": nome_arquivo, "Lim Inf": r.get("Lim Inf"), "Lim Sup": r.get("Lim Sup"),
         })
     return saida, cab
 
