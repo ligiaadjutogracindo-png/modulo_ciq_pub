@@ -19,6 +19,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+import analise_critica
 import ep_base
 import ep_calculo
 
@@ -894,10 +895,40 @@ with st.sidebar:
         "Usado nas análises por teste (CV, Bias, Erro Total, Sigma e EP)",
         testes_disponiveis, key="teste_global",
     )
+    meses_teste_ac = (df.loc[df["Teste"] == teste_global, ["_ordem_tempo", "Mês/Ano"]].drop_duplicates()
+                      .sort_values("_ordem_tempo", ascending=False))
+    mes_ac = st.selectbox(
+        "Mês da análise crítica", meses_teste_ac["Mês/Ano"].tolist() or ["—"],
+        help="Mês de referência das caixas 📝 de análise crítica e do PDF (módulo 📝 Análise crítica).")
+    ordem_ac = int(meses_teste_ac.loc[meses_teste_ac["Mês/Ano"] == mes_ac, "_ordem_tempo"].iloc[0])         if mes_ac in set(meses_teste_ac["Mês/Ano"]) else None
+
+
+def campo_analise_critica(secao, teste, onde, altura=110):
+    """Caixa de texto da análise crítica (teste + mês + parte). As caixas das abas e as do módulo 📝 Análise
+    crítica leem e gravam no mesmo lugar (st.session_state["analise_critica"]), então mostram o mesmo texto."""
+    store = st.session_state.setdefault("analise_critica", {})
+    chave = f"{str(teste).strip().upper()}|{mes_ac}|{secao}"
+    chave_widget = f"ac|{onde}|{chave}"
+    st.session_state[chave_widget] = store.get(chave, "")
+
+    def salva():
+        store[chave] = st.session_state[chave_widget]
+
+    st.text_area("Análise crítica", key=chave_widget, on_change=salva, height=altura, label_visibility="collapsed",
+                 placeholder="Escreva aqui a análise crítica — ela vai para o PDF do módulo 📝 Análise crítica "
+                             "(o texto é guardado quando você clica fora da caixa).")
+
+
+def expander_analise_critica(secao, teste=None):
+    teste = teste or teste_global
+    with st.expander(f"📝 Análise crítica — {analise_critica.SECOES[secao][1]} · {teste} · {mes_ac}"):
+        campo_analise_critica(secao, teste, "aba")
+
 
 # Três módulos, cada um com as suas análises em abas. Os blocos abaixo escrevem direto na aba de
 # destino ("with tab_x:"), então a ordem do código não precisa seguir a ordem das abas.
-mod_ciq, mod_ep, mod_comp = st.tabs(["🧫 Módulo CIQ", "🧪 Módulo EP", "⚖️ Comparabilidade"])
+mod_ciq, mod_ep, mod_ac, mod_comp = st.tabs(["🧫 Módulo CIQ", "🧪 Módulo EP", "📝 Análise crítica",
+                                               "⚖️ Comparabilidade"])
 nomes_abas = ["📊 Dashboard", "📉 CV", "🎯 Bias", "⚠ Erro Total", "📋 Resultados Mensais"]
 if completo:
     nomes_abas.append("🗓 Sigma por Período")
@@ -1780,6 +1811,7 @@ MOSTRAR_DEPARA_EP = False   # situação do de-para escondida enquanto a ferrame
 OPCOES_VIES_EP = {"Automático": "Automático", "Médio (%)": "Médio", "Regressão": "Regressão"}
 OPCOES_FORMULA_EP = {"Automático": "Automático", "σ %": "σ %", "σ absoluto": "σ abs"}
 res_ep_global = pd.DataFrame()   # resultados do EP por amostra, usados também na aba de Sigma
+teste_hist = None                # teste escolhido no histórico do EP (para a caixa de análise crítica)
 
 
 def _mtime(caminho):
@@ -2292,7 +2324,8 @@ with tab_ep:
                                                              OPCOES_FORMULA_EP[formula_ep], pareamento_ep)
                     spec_teste = spec or next((spec_por_teste[m] for m in rd["Mneus"] if spec_por_teste.get(m)), None)
                     izs = [abs(l["IZ"]) for l in linhas if l["IZ"] is not None]
-                    base_linha = {"Mês": pd.Timestamp(d_envio), "_data": d_envio, "Provedor": rd["Provedor"],
+                    base_linha = {"Mês": pd.Timestamp(d_envio), "_data": d_envio, "_mneus": rd["Mneus"],
+                                  "Provedor": rd["Provedor"],
                                   "Programa": rd["Programa"], "Rodada": rd["Rodada"], "Teste": rd["Mneumonico"],
                                   "Sistema": rd["Sistema"], "Equipamento": rd["Equipamento"] or "—"}
                     for l in linhas:
@@ -2474,7 +2507,7 @@ if completo:
                  "próprio. O pior cenário do CIQ continua calculado só com o CIQ.")
         ep_teste = pd.DataFrame()
         if mostrar_ep and not res_ep_global.empty:
-            ep_teste = res_ep_global[(res_ep_global["Teste"] == str(teste_global).upper())
+            ep_teste = res_ep_global[res_ep_global["_mneus"].map(lambda t: str(teste_global).upper() in t)
                                      & res_ep_global["Sigma EP"].notna()].copy()
             if nivel_sigma is not None:
                 ep_teste = ep_teste[ep_teste["Nível CIQ"] == nivel_sigma]
@@ -2640,3 +2673,119 @@ if completo:
         if testes_nivel_fixo:
             st.caption("Testes com critério \"Nível específico\" (só aquele nível entra na tabela): " +
                        ", ".join(f"{t} → Nível {criterios_sigma[t]}" for t in testes_nivel_fixo))
+
+# ---------------- ANÁLISE CRÍTICA ----------------
+# Caixa 📝 no fim de cada análise do teste em foco; o texto é o mesmo do módulo 📝 Análise crítica (PDF).
+with tab_grafico:
+    expander_analise_critica("cv")
+with tab_bias:
+    expander_analise_critica("bias")
+with tab_et:
+    expander_analise_critica("erro_total")
+if completo:
+    with tab_periodo:
+        expander_analise_critica("sigma")
+with ep_tab_res:
+    expander_analise_critica("ep_resultados")
+if teste_hist:
+    with ep_tab_hist:
+        expander_analise_critica("ep_historico", teste_hist)
+
+with mod_ac:
+    teste_ac = str(teste_global).strip().upper()
+    store_ac = st.session_state.setdefault("analise_critica", {})
+    st.subheader(f"Análise crítica — {teste_global} · {mes_ac}")
+    st.caption(
+        "O teste e o mês vêm da barra lateral (\"Teste em foco\" e \"Mês da análise crítica\"). Escolha o que levar, "
+        "escreva a análise de cada parte — ou deixe em branco para fazer a análise em outra ferramenta — e gere o "
+        "PDF. O que for escrito nas caixas 📝 das abas do CIQ e do EP aparece aqui também (e vice-versa)."
+    )
+    st.warning("O app não guarda os textos depois de fechado (nem ao recarregar a página): gere o PDF ou baixe o "
+               "rascunho antes de sair.", icon="💾")
+
+    # rascunho salvo antes: carrega antes de desenhar as caixas
+    with st.expander("📂 Continuar um rascunho salvo"):
+        rascunho = st.file_uploader("Rascunho (.json)", type="json", key="ac_rascunho")
+        if rascunho is not None and st.session_state.get("ac_rascunho_id") != rascunho.file_id:
+            try:
+                dados_rasc = json.loads(rascunho.getvalue().decode("utf-8"))
+                store_ac.update({str(k): str(v) for k, v in dados_rasc.get("textos", {}).items()})
+                if dados_rasc.get("responsavel"):
+                    st.session_state["ac_responsavel"] = dados_rasc["responsavel"]
+                st.session_state["ac_rascunho_id"] = rascunho.file_id
+                st.rerun()
+            except (ValueError, UnicodeDecodeError, AttributeError):
+                st.error("Arquivo de rascunho inválido.")
+
+    if ordem_ac is None:
+        st.info("Sem CIQ desse teste no período escolhido na barra lateral.")
+    else:
+        opcoes_ac = [s for s in analise_critica.SECOES if completo or s != "sigma"]
+        escolhidas_ac = st.pills("O que levar para a análise crítica", opcoes_ac, selection_mode="multi",
+                                 default=opcoes_ac, format_func=lambda s: analise_critica.SECOES[s][1],
+                                 key="ac_secoes")
+        escolhidas_ac = [s for s in opcoes_ac if s in (escolhidas_ac or [])]
+
+        ciq_ac = df[(df["Teste"] == teste_global) & (df["_ordem_tempo"] <= ordem_ac)]
+        ep_ac = pd.DataFrame()
+        if not res_ep_global.empty:
+            ep_ac = res_ep_global[res_ep_global["_mneus"].map(lambda t: teste_ac in t)
+                                  & (res_ep_global["_data"].map(lambda d: d.year * 12 + d.month) <= ordem_ac)]
+
+        for secao in escolhidas_ac:
+            st.markdown(f"**{analise_critica.SECOES[secao][0]}**")
+            if secao == "resumo_ciq":
+                mes_df = ciq_ac[ciq_ac["_ordem_tempo"] == ordem_ac].copy()
+                mes_df["N"] = mes_df["N"].fillna(0)
+                mes_df = mes_df.loc[mes_df.groupby(["Equipamento (nome)", "NívelNum"])["N"].idxmax()]
+                cols_mes = ["Equipamento (nome)", "NívelNum", "N", "CV (%)", "CV Máximo", "Bias Observado (sinal)",
+                            "Bias Máximo", "Erro Total Observado", "ETM (para comparação)"] + (
+                    ["Sigma Mensal"] if completo else [])
+                st.dataframe(mes_df[cols_mes].rename(columns={
+                    "Equipamento (nome)": "Equipamento", "NívelNum": "Nível", "Bias Observado (sinal)": "Bias",
+                    "Erro Total Observado": "Erro total", "ETM (para comparação)": "ETM", "Sigma Mensal": "Sigma"}),
+                    hide_index=True, use_container_width=True)
+            elif secao in ("ep_resultados", "ep_historico") and ep_ac.empty:
+                st.caption("Sem rodadas de EP desse teste no período.")
+            else:
+                st.caption("Os gráficos que vão para o PDF são os da aba correspondente, no período da barra lateral "
+                           f"até {mes_ac}.")
+            campo_analise_critica(secao, teste_ac, "rel")
+        st.markdown("**Conclusão e ações**")
+        campo_analise_critica("conclusao", teste_ac, "rel", altura=140)
+        c_resp, c_data = st.columns(2)
+        responsavel_ac = c_resp.text_input("Responsável pela análise", key="ac_responsavel")
+        data_ac = c_data.date_input("Data da análise", value=pd.Timestamp.today().date(), format="DD/MM/YYYY",
+                                    key="ac_data")
+
+        st.divider()
+        b_pdf, b_rasc = st.columns(2)
+        if b_pdf.button("📄 Gerar PDF", type="primary", key="ac_gerar"):
+            meses_periodo = ciq_ac.sort_values("_ordem_tempo")["Mês/Ano"]
+            with st.spinner("Montando o PDF..."):
+                pdf_ac = analise_critica.gera_pdf(
+                    teste=teste_global,
+                    analito=next((a for a in ciq_ac["Spec - Analito"] if isinstance(a, str) and a), ""),
+                    mes=mes_ac,
+                    periodo=f"{meses_periodo.iloc[0]} a {mes_ac}" if len(meses_periodo) else mes_ac,
+                    spec=next((s for s in ciq_ac["Spec"] if isinstance(s, dict)), None),
+                    ciq=ciq_ac, ordem_mes=ordem_ac, ep=ep_ac, secoes=escolhidas_ac,
+                    textos={s: store_ac.get(f"{teste_ac}|{mes_ac}|{s}", "") for s in escolhidas_ac},
+                    conclusao=store_ac.get(f"{teste_ac}|{mes_ac}|conclusao", ""),
+                    responsavel=responsavel_ac, data_analise=data_ac, completo=completo,
+                    limite_id=ep_calculo.LIMITE_ID, limite_z=ep_calculo.LIMITE_IZ_ALERTA)
+            st.session_state["ac_pdf"] = (
+                f"analise_critica_{teste_ac}_{mes_ac.replace('/', '-')}.pdf", pdf_ac,
+                f"{pd.Timestamp.now():%H:%M}")
+        if st.session_state.get("ac_pdf"):
+            nome_pdf, pdf_ac, hora_pdf = st.session_state["ac_pdf"]
+            b_pdf.download_button(f"⬇ Baixar {nome_pdf}", pdf_ac, nome_pdf, "application/pdf", key="ac_baixar_pdf")
+            b_pdf.caption(f"Gerado às {hora_pdf}. Se mudar algum texto ou escolha, gere de novo.")
+        b_rasc.download_button(
+            "💾 Baixar rascunho (para continuar depois)",
+            json.dumps({"versao": 1, "textos": store_ac, "responsavel": responsavel_ac},
+                       ensure_ascii=False, indent=1).encode("utf-8"),
+            f"rascunho_analise_critica_{pd.Timestamp.today():%Y-%m-%d}.json", "application/json",
+            key="ac_baixar_rascunho",
+            help="Guarda todos os textos escritos nesta sessão (de todos os testes e meses). Para continuar, suba o "
+                 "arquivo em \"📂 Continuar um rascunho salvo\", no alto desta aba.")
