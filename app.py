@@ -919,6 +919,12 @@ def campo_analise_critica(secao, teste, onde, altura=110):
                              "(o texto é guardado quando você clica fora da caixa).")
 
 
+@st.cache_data(show_spinner=False, max_entries=200)
+def grafico_analise_critica(secao, ciq, ep, spec, limite_id, limite_z):
+    """PNG dos gráficos de uma parte da análise crítica (o mesmo desenho do PDF)."""
+    return analise_critica.figura_png(secao, ciq, ep, spec, limite_id, limite_z)
+
+
 def expander_analise_critica(secao, teste=None):
     teste = teste or teste_global
     with st.expander(f"📝 Análise crítica — {analise_critica.SECOES[secao][1]} · {teste} · {mes_ac}"):
@@ -2156,18 +2162,30 @@ with tab_ep:
                     n = str(nome or "").lower()
                     return next((tipo for chave, tipo in PLATAFORMA_EP if chave in n), None)
 
+                # volume de CIQ (N) por teste/plataforma/equipamento/mês, somado uma vez só: a sugestão roda para
+                # cada rodada (mais de mil) e, filtrando o CIQ inteiro a cada vez, deixava o app lento
+                vol_ciq = (ciq.assign(TipoU=ciq["Tipo"].astype(str).str.upper())
+                           .groupby(["TesteU", "TipoU", "Equipamento (nome)", "Ano", "Mês"])["N"].sum().reset_index())
+                vol_por_teste = {t: g for t, g in vol_ciq.groupby("TesteU")}
+                sugestoes = {}
+
                 def sugere_equipamento(mneus, d_envio, equip_prov):
-                    partes = [ciq_por_teste[m] for m in mneus if m in ciq_por_teste]
-                    if not partes:
-                        return ""
-                    cand = pd.concat(partes)
+                    """Equipamento com mais CIQ do teste no mês da rodada (na plataforma informada, se houver)."""
                     tipo = plataforma_do_provedor(equip_prov)
-                    if tipo:
-                        mesma_plat = cand[cand["Tipo"].astype(str).str.upper() == tipo]
-                        cand = mesma_plat if not mesma_plat.empty else cand
-                    no_mes = cand[(cand["Ano"] == d_envio.year) & (cand["Mês"] == d_envio.month)]
-                    cand = no_mes if not no_mes.empty else cand
-                    return cand.groupby("Equipamento (nome)")["N"].sum().idxmax()
+                    chave = (tuple(mneus), d_envio.year, d_envio.month, tipo)
+                    if chave not in sugestoes:
+                        partes = [vol_por_teste[m] for m in mneus if m in vol_por_teste]
+                        if not partes:
+                            sugestoes[chave] = ""
+                        else:
+                            cand = pd.concat(partes) if len(partes) > 1 else partes[0]
+                            if tipo:
+                                mesma_plat = cand[cand["TipoU"] == tipo]
+                                cand = mesma_plat if not mesma_plat.empty else cand
+                            no_mes = cand[(cand["Ano"] == d_envio.year) & (cand["Mês"] == d_envio.month)]
+                            cand = no_mes if not no_mes.empty else cand
+                            sugestoes[chave] = cand.groupby("Equipamento (nome)")["N"].sum().idxmax()
+                    return sugestoes[chave]
 
                 def indice_desvio(a):
                     """ID: o ControlLab informa; no CAP sai dos limites de aceitação (|ID| > 1 = fora da faixa)."""
@@ -2732,9 +2750,45 @@ with mod_ac:
             ep_ac = res_ep_global[res_ep_global["_mneus"].map(lambda t: teste_ac in t)
                                   & (res_ep_global["_data"].map(lambda d: d.year * 12 + d.month) <= ordem_ac)]
 
+        mostrar_previa = st.toggle(
+            "Mostrar aqui os gráficos e tabelas que vão para o PDF", value=True, key="ac_previa",
+            help="São os mesmos desenhos do PDF. Desligue se quiser a aba mais leve enquanto escreve.")
+        spec_ac = next((s for s in ciq_ac["Spec"] if isinstance(s, dict)), None)
+        # só as colunas que os gráficos usam (deixa o cache dos gráficos leve)
+        ciq_graf = ciq_ac[["Equipamento (nome)", "NívelNum", "_ordem_tempo", "Mês/Ano", "N", "CV (%)", "CV Máximo",
+                           "Bias Observado (sinal)", "Bias Máximo", "Erro Total Observado", "ETM (para comparação)",
+                           "Sigma Mensal", "Sigma Mínimo"]]
+        ep_graf = (ep_ac[["_data", "Provedor", "Programa", "Rodada", "Posição", "Especime", "Índice Provedor", "IZ",
+                          "Bias % amostra"]] if not ep_ac.empty else ep_ac)
+
         for secao in escolhidas_ac:
             st.markdown(f"**{analise_critica.SECOES[secao][0]}**")
-            if secao == "resumo_ciq":
+            if not mostrar_previa:
+                pass
+            elif secao in ("ep_resultados", "ep_historico") and ep_ac.empty:
+                st.caption("Sem rodadas de EP desse teste no período.")
+            elif secao == "ep_resultados":
+                cols_ep_ac = ["Mês", "Provedor", "Programa", "Equipamento", "Especime", "RL", "VD", "Bias % amostra",
+                              "Índice Provedor", "IZ"] + (["Sigma EP"] if completo else [])
+                tab_ep_ac = ep_ac.sort_values(["_data", "Provedor", "Programa", "Posição"])[cols_ep_ac]
+                st.dataframe(
+                    tab_ep_ac.style.format({c: "{:.2f}" for c in ["Bias % amostra", "Índice Provedor", "IZ", "Sigma EP"]
+                                            if c in cols_ep_ac}, na_rep="—")
+                    .map(lambda v: cor_limite_ep(v, ep_calculo.LIMITE_ID), subset=["Índice Provedor"])
+                    .map(lambda v: cor_limite_ep(v, ep_calculo.LIMITE_IZ_ALERTA), subset=["IZ"]),
+                    hide_index=True, use_container_width=True, height=min(420, 38 + 35 * len(tab_ep_ac)),
+                    column_config={"Mês": st.column_config.DateColumn("Mês", format="MM/YYYY"),
+                                   "Especime": "Amostra", "Bias % amostra": "Bias %", "Índice Provedor": "ID",
+                                   "IZ": "Z grupo"})
+            elif secao != "resumo_ciq":
+                png = grafico_analise_critica(secao, ciq_graf, ep_graf, spec_ac, ep_calculo.LIMITE_ID,
+                                              ep_calculo.LIMITE_IZ_ALERTA)
+                if png is None:
+                    st.caption("Sem dados no período.")
+                else:
+                    st.image(png, width="stretch")
+                    st.caption(analise_critica.LEGENDA_EP if secao == "ep_historico" else analise_critica.LEGENDA_CIQ)
+            if secao == "resumo_ciq" and mostrar_previa:
                 mes_df = ciq_ac[ciq_ac["_ordem_tempo"] == ordem_ac].copy()
                 mes_df["N"] = mes_df["N"].fillna(0)
                 mes_df = mes_df.loc[mes_df.groupby(["Equipamento (nome)", "NívelNum"])["N"].idxmax()]
@@ -2745,11 +2799,6 @@ with mod_ac:
                     "Equipamento (nome)": "Equipamento", "NívelNum": "Nível", "Bias Observado (sinal)": "Bias",
                     "Erro Total Observado": "Erro total", "ETM (para comparação)": "ETM", "Sigma Mensal": "Sigma"}),
                     hide_index=True, use_container_width=True)
-            elif secao in ("ep_resultados", "ep_historico") and ep_ac.empty:
-                st.caption("Sem rodadas de EP desse teste no período.")
-            else:
-                st.caption("Os gráficos que vão para o PDF são os da aba correspondente, no período da barra lateral "
-                           f"até {mes_ac}.")
             campo_analise_critica(secao, teste_ac, "rel")
         st.markdown("**Conclusão e ações**")
         campo_analise_critica("conclusao", teste_ac, "rel", altura=140)
@@ -2768,7 +2817,7 @@ with mod_ac:
                     analito=next((a for a in ciq_ac["Spec - Analito"] if isinstance(a, str) and a), ""),
                     mes=mes_ac,
                     periodo=f"{meses_periodo.iloc[0]} a {mes_ac}" if len(meses_periodo) else mes_ac,
-                    spec=next((s for s in ciq_ac["Spec"] if isinstance(s, dict)), None),
+                    spec=spec_ac,
                     ciq=ciq_ac, ordem_mes=ordem_ac, ep=ep_ac, secoes=escolhidas_ac,
                     textos={s: store_ac.get(f"{teste_ac}|{mes_ac}|{s}", "") for s in escolhidas_ac},
                     conclusao=store_ac.get(f"{teste_ac}|{mes_ac}|conclusao", ""),

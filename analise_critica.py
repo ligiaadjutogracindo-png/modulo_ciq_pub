@@ -227,16 +227,16 @@ def _grafico_ciq(dados, meses, coluna, limite, titulo, simetrico=False, maior_me
     return desenha
 
 
-def _por_nivel(rel, ciq, meses, coluna, limite, simetrico=False, maior_melhor=False, rotulo=""):
-    # só os níveis com valor no período (a especificação pode prever um nível que não tem controle)
-    niveis = sorted(int(n) for n in ciq.loc[ciq[coluna].notna(), "NívelNum"].dropna().unique())
-    if not niveis:
-        rel.texto("(sem dados no período)", tamanho=8.5, cor="#777777")
-        return
-    desenhos = [_grafico_ciq(ciq[ciq["NívelNum"] == n], meses, coluna, limite, f"{rotulo} — Nível {n}",
-                             simetrico, maior_melhor) for n in niveis[:4]]
-    rel.graficos(desenhos, altura=0.44, margem_inferior=0.16)
-    rel.texto("Linha vermelha tracejada: limite da especificação. Uma cor por equipamento.", tamanho=7, cor="#777777")
+# gráficos do CIQ por nível: coluna do valor, coluna do limite, limite dos dois lados, maior é melhor, rótulo
+GRAFICOS_CIQ = {
+    "cv": ("CV (%)", "CV Máximo", False, False, "CV (%)"),
+    "bias": ("Bias Observado (sinal)", "Bias Máximo", True, False, "Bias"),
+    "erro_total": ("Erro Total Observado", "ETM (para comparação)", False, False, "Erro total"),
+    "sigma": ("Sigma Mensal", "Sigma Mínimo", False, True, "Sigma"),
+}
+LEGENDA_CIQ = "Linha vermelha tracejada: limite da especificação. Uma cor por equipamento."
+LEGENDA_EP = ("Cada cor é uma amostra da rodada (1ª, 2ª, 3ª...); losango = ControlLab, círculo = CAP. "
+              "Linha cinza: média da rodada. Faixa verde: ID ±1, Z ±2 e viés dentro do ESM.")
 
 
 def _resumo_ciq(rel, ciq_mes, completo):
@@ -323,6 +323,51 @@ def _grafico_ep(ep, meses, coluna, titulo, faixa=None, limite_vermelho=None, eix
     return desenha
 
 
+def _prepara(ciq, ep):
+    """CIQ com um registro por mês/equipamento/nível e EP com a coluna do mês (posição no eixo)."""
+    ciq = _um_por_mes(ciq)
+    meses = ciq[["_ordem_tempo", "Mês/Ano"]].drop_duplicates().sort_values("_ordem_tempo")
+    if not ep.empty:
+        ep = ep.assign(_mes=ep["_data"].map(lambda x: pd.Timestamp(x.year, x.month, 1)))
+    meses_ep = sorted(set(ep["_mes"])) if not ep.empty else []
+    return ciq, meses, ep, meses_ep
+
+
+def _desenhos(secao, ciq, meses, ep, meses_ep, spec, limite_id, limite_z):
+    """Gráficos de uma parte (funções f(ax), lado a lado). Lista vazia = sem gráfico ou sem dados."""
+    if secao in GRAFICOS_CIQ:
+        coluna, limite, simetrico, maior_melhor, rotulo = GRAFICOS_CIQ[secao]
+        if ciq.empty:
+            return []
+        # só os níveis com valor no período (a especificação pode prever um nível que não tem controle)
+        niveis = sorted(int(n) for n in ciq.loc[ciq[coluna].notna(), "NívelNum"].dropna().unique())
+        return [_grafico_ciq(ciq[ciq["NívelNum"] == n], meses, coluna, limite, f"{rotulo} — Nível {n}",
+                             simetrico, maior_melhor) for n in niveis[:4]]
+    if secao == "ep_historico" and not ep.empty:
+        return [_grafico_ep(ep, meses_ep, "Índice Provedor", "Índice de Desvio (ID)", faixa=limite_id),
+                _grafico_ep(ep, meses_ep, "IZ", "Índice Z (grupo de comparação)", faixa=limite_z,
+                            limite_vermelho=3.0),
+                _grafico_ep(ep, meses_ep, "Bias % amostra", "Viés (%) por amostra",
+                            faixa=(spec or {}).get("ESM (%)"), eixo_minimo=None)]
+    return []
+
+
+def figura_png(secao, ciq, ep, spec, limite_id=1.0, limite_z=2.0, dpi=110):
+    """PNG com os gráficos da parte — o mesmo desenho que vai para o PDF — ou None quando não há gráfico."""
+    ciq, meses, ep, meses_ep = _prepara(ciq, ep)
+    desenhos = _desenhos(secao, ciq, meses, ep, meses_ep, spec, limite_id, limite_z)
+    if not desenhos:
+        return None
+    fig = plt.figure(figsize=(11.0, 3.3))
+    for i, desenha in enumerate(desenhos):
+        desenha(fig.add_subplot(1, len(desenhos), i + 1))
+    fig.subplots_adjust(wspace=0.25)
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight")   # "tight" inclui a legenda abaixo do gráfico
+    plt.close(fig)
+    return buf.getvalue()
+
+
 def gera_pdf(teste, analito, mes, periodo, spec, ciq, ordem_mes, ep, secoes, textos, conclusao,
              responsavel, data_analise, completo=True, limite_id=1.0, limite_z=2.0):
     """
@@ -354,40 +399,25 @@ def gera_pdf(teste, analito, mes, periodo, spec, ciq, ordem_mes, ep, secoes, tex
         rel.texto("Especificações: " + " · ".join(partes), tamanho=9)
     rel.texto(f"Gerado em {datetime.now():%d/%m/%Y %H:%M} pelo app Desempenho Analítico.", tamanho=8, cor="#777777")
 
-    ciq = _um_por_mes(ciq)
-    meses = ciq[["_ordem_tempo", "Mês/Ano"]].drop_duplicates().sort_values("_ordem_tempo")
-    if not ep.empty:
-        ep = ep.assign(_mes=ep["_data"].map(lambda x: pd.Timestamp(x.year, x.month, 1)))
-    meses_ep = sorted(set(ep["_mes"])) if not ep.empty else []
-
+    ciq, meses, ep, meses_ep = _prepara(ciq, ep)
     for secao in secoes:
-        tem_grafico = secao in ("cv", "bias", "erro_total", "sigma", "ep_historico")
+        tem_grafico = secao in GRAFICOS_CIQ or secao == "ep_historico"
         rel.titulo_secao(SECOES[secao][0], reserva=0.52 if tem_grafico else 0.16)
         if secao == "resumo_ciq":
             _resumo_ciq(rel, ciq[ciq["_ordem_tempo"] == ordem_mes], completo)
-        elif secao == "cv":
-            _por_nivel(rel, ciq, meses, "CV (%)", "CV Máximo", rotulo="CV (%)")
-        elif secao == "bias":
-            _por_nivel(rel, ciq, meses, "Bias Observado (sinal)", "Bias Máximo", simetrico=True, rotulo="Bias")
-        elif secao == "erro_total":
-            _por_nivel(rel, ciq, meses, "Erro Total Observado", "ETM (para comparação)", rotulo="Erro total")
-        elif secao == "sigma":
-            _por_nivel(rel, ciq, meses, "Sigma Mensal", "Sigma Mínimo", maior_melhor=True, rotulo="Sigma")
         elif secao == "ep_resultados":
             _ep_resultados(rel, ep, completo, limite_id, limite_z)
-        elif secao == "ep_historico":
-            if ep.empty:
-                rel.texto("(sem rodadas de EP do teste no período)", tamanho=8.5, cor="#777777")
+        else:
+            desenhos = _desenhos(secao, ciq, meses, ep, meses_ep, spec, limite_id, limite_z)
+            if not desenhos:
+                rel.texto("(sem rodadas de EP do teste no período)" if secao == "ep_historico"
+                          else "(sem dados no período)", tamanho=8.5, cor="#777777")
+            elif secao == "ep_historico":
+                rel.graficos(desenhos)
+                rel.texto(LEGENDA_EP, tamanho=7, cor="#777777")
             else:
-                rel.graficos([
-                    _grafico_ep(ep, meses_ep, "Índice Provedor", "Índice de Desvio (ID)", faixa=limite_id),
-                    _grafico_ep(ep, meses_ep, "IZ", "Índice Z (grupo de comparação)", faixa=limite_z,
-                                limite_vermelho=3.0),
-                    _grafico_ep(ep, meses_ep, "Bias % amostra", "Viés (%) por amostra", faixa=spec.get("ESM (%)"),
-                                eixo_minimo=None)])
-                rel.texto("Cada cor é uma amostra da rodada (1ª, 2ª, 3ª...); losango = ControlLab, círculo = CAP. "
-                          "Linha cinza: média da rodada. Faixa verde: ID ±1, Z ±2 e viés dentro do ESM.",
-                          tamanho=7, cor="#777777")
+                rel.graficos(desenhos, altura=0.44, margem_inferior=0.16)
+                rel.texto(LEGENDA_CIQ, tamanho=7, cor="#777777")
         rel.quadro_analise(textos.get(secao, ""))
 
     rel.titulo_secao("Conclusão e ações", reserva=0.26)   # conclusão e assinatura na mesma página
