@@ -209,12 +209,17 @@ def _grafico_ciq(dados, meses, coluna, limite, titulo, simetrico=False, maior_me
                 continue
             ax.plot([pos[o] for o in g["_ordem_tempo"]], g[coluna], marker="o", ms=3, lw=1.2,
                     color=PALETA[k % len(PALETA)], label=_txt(equip))
-        valores_lim = dados[limite].dropna() if limite in dados else pd.Series(dtype=float)
-        if len(valores_lim):
-            v = float(valores_lim.iloc[-1])
-            ax.axhline(v, color="#C62828", ls="--", lw=1)
+        # limite mês a mês (a especificação tem vigência: pode mudar no meio do período) — em degraus
+        lim = (dados.dropna(subset=[limite]).groupby("_ordem_tempo")[limite].first()
+               if limite in dados else pd.Series(dtype=float))
+        if len(lim):
+            # cada mês ocupa de x − 0,5 a x + 0,5: o degrau fica entre o mês antigo e o da mudança
+            xs = [pos[o] for o in lim.index]
+            xs_ext = [x - 0.5 for x in xs] + [xs[-1] + 0.5]
+            ys_ext = list(lim.values) + [lim.values[-1]]
+            ax.step(xs_ext, ys_ext, where="post", color="#C62828", ls="--", lw=1)
             if simetrico:
-                ax.axhline(-v, color="#C62828", ls="--", lw=1)
+                ax.step(xs_ext, [-v for v in ys_ext], where="post", color="#C62828", ls="--", lw=1)
         if simetrico:
             ax.axhline(0, color="#999999", lw=0.6)
         ax.set_title(_txt(titulo), fontsize=9)
@@ -396,6 +401,9 @@ def gera_pdf(teste, analito, mes, periodo, spec, ciq, ordem_mes, ep, secoes, tex
     if completo and pd.notna(spec.get("Sigma Mínimo")):
         partes.append(f"Sigma mínimo {_g(spec['Sigma Mínimo'])}")
     if partes:
+        vig, mes_vig = spec.get("Vigente a partir de"), spec.get("_vigencia")
+        partes.append(f"alterada em {vig:%d/%m/%Y}, vale a partir de {MESES[(mes_vig - 1) % 12 + 1]}/{(mes_vig - 1) // 12}"
+                      if vig and mes_vig else "vigente desde o início do histórico")
         rel.texto("Especificações: " + " · ".join(partes), tamanho=9)
     rel.texto(f"Gerado em {datetime.now():%d/%m/%Y %H:%M} pelo app Desempenho Analítico.", tamanho=8, cor="#777777")
 

@@ -20,6 +20,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import analise_critica
+import ciq_shift
 import ep_base
 import ep_calculo
 
@@ -38,6 +39,8 @@ MESES_ABREV = {v.lower(): k for k, v in MESES_NOME.items()}
 MODULO_PLATAFORMA = {
     "Atellica": "Atellica", "BN": "BN", "Liaison": "Liaison", "Maglumi": "Maglumi",
     "Immulite": "Immulite", "Diestro": "Diestro", "D10": "D10", "C513": "Cobas",
+    # módulos do Shift: a especificação vem da linha da especificacoes.xlsx com a mesma Plataforma
+    "ABC": "ABC", "Hematologia": "Hematologia",
 }
 
 STATUS_COLORS = {"VERDE": "#D9EAD3", "AMARELO": "#FFF2CC", "VERMELHO": "#F4CCCC"}
@@ -49,10 +52,9 @@ STATUS_COLORS = {"VERDE": "#D9EAD3", "AMARELO": "#FFF2CC", "VERMELHO": "#F4CCCC"
 def _hash_arquivos_referencia():
     """Assinatura baseada na data de modificação dos arquivos de referência.
     Muda sempre que qualquer um deles é editado e salvo, fazendo o
-    st.cache_data invalidar e recarregar a tabela_mestre.xlsx (e afins)
+    st.cache_data invalidar e recarregar a especificacoes.xlsx (e afins)
     automaticamente — sem precisar reiniciar o app ou limpar o cache."""
-    arquivos = ["tabela_mestre.xlsx", "bd_fallback.xlsx", "equipamentos.xlsx", "testes_excluidos.xlsx",
-                "niveis_controle.xlsx"]
+    arquivos = ["especificacoes.xlsx", "equipamentos.xlsx", "testes_excluidos.xlsx", "niveis_controle.xlsx"]
     partes = []
     for nome in arquivos:
         caminho = REF_DIR / nome
@@ -66,18 +68,7 @@ SO_VAZIO_E_NA = {"keep_default_na": False, "na_values": [""]}
 
 @st.cache_data
 def load_reference(assinatura):   # sem "_" no nome: o cache só é refeito se o parâmetro for considerado
-    df_mestre = pd.read_excel(REF_DIR / "tabela_mestre.xlsx", **SO_VAZIO_E_NA).astype(object)
-    mestre = df_mestre.where(pd.notna(df_mestre), None).to_dict("records")
-
-    df_bd = pd.read_excel(REF_DIR / "bd_fallback.xlsx", **SO_VAZIO_E_NA).astype(object)
-    df_bd = df_bd.where(pd.notna(df_bd), None)
-    bd_fallback = {
-        str(row["Mneumonico Infinity"]).strip().upper(): {
-            "Analito": row["Analito"], "ETM (%)": row["ETM (%)"],
-            "ESM (%)": row["ESM (%)"], "CV Máx (%)": row["CV Máx (%)"],
-        }
-        for _, row in df_bd.iterrows() if row["Mneumonico Infinity"]
-    }
+    specs_by_codigo, problemas_spec = carrega_especificacoes(REF_DIR / "especificacoes.xlsx")
 
     df_equip = pd.read_excel(REF_DIR / "equipamentos.xlsx", **SO_VAZIO_E_NA).astype(object)
     df_equip = df_equip.where(pd.notna(df_equip), None)
@@ -111,11 +102,41 @@ def load_reference(assinatura):   # sem "_" no nome: o cache só é refeito se o
             teste = "" if pd.isna(row.get("Teste")) else str(row.get("Teste")).strip().upper()
             niveis_depara[(norm_nivel(str(controle)), lote, teste)] = int(float(nivel))
 
-    mestre_by_mneu = defaultdict(list)
-    for r in mestre:
-        if r["Mneumonico Infinity"]:
-            mestre_by_mneu[str(r["Mneumonico Infinity"]).strip().upper()].append(r)
-    return mestre_by_mneu, bd_fallback, equip_depara, testes_excluidos, niveis_depara
+    return specs_by_codigo, problemas_spec, equip_depara, testes_excluidos, niveis_depara
+
+
+def carrega_especificacoes(caminho):
+    """Planilha única de especificações (Infinity e Shift), com histórico por data de vigência.
+    Devolve ({código: [linhas]}, [problemas encontrados]). Cada linha ganha "_vigencia" = ano × 12 + mês
+    em que ela PASSA A VALER: o mês SEGUINTE ao da data em "Vigente a partir de" (regra definida em
+    28/out/2026 — o mês da mudança ainda é avaliado com a especificação anterior). Vazio = desde sempre."""
+    df = pd.read_excel(caminho, sheet_name="Especificações", **SO_VAZIO_E_NA)
+    datas = pd.to_datetime(df["Vigente a partir de"], errors="coerce", dayfirst=True)
+    specs, problemas = defaultdict(list), []
+    # to_dict + limpeza: vazio vira None (o iterrows transforma linhas quase vazias em NaN)
+    for i, bruta in enumerate(df.to_dict("records")):
+        row = {k: (None if pd.isna(v) else v) for k, v in bruta.items()}
+        codigo = str(row.get("Código do teste") or "").strip().upper()
+        if not codigo:
+            continue
+        linha = dict(row)
+        linha["Plataforma"] = str(row.get("Plataforma") or "").strip()
+        bruto, d = row.get("Vigente a partir de"), datas.iloc[i]
+        if bruto is not None and pd.isna(d):
+            problemas.append(f"linha {i + 2} ({linha['Plataforma']} · {codigo}): data de vigência inválida "
+                             f"({bruto!r}) — a linha foi ignorada")
+            continue
+        linha["_vigencia"] = None if pd.isna(d) else d.year * 12 + d.month + 1   # mês seguinte à mudança
+        linha["Vigente a partir de"] = None if pd.isna(d) else d.date()
+        specs[codigo].append(linha)
+    for codigo, linhas in specs.items():
+        vistos = Counter((l["Plataforma"], l["_vigencia"]) for l in linhas)
+        for (plat, vig), n in vistos.items():
+            if n > 1:
+                quando = ("sem data de vigência" if vig is None
+                          else f"com vigência no mesmo mês ({MESES_NOME[(vig - 1) % 12 + 1]}/{(vig - 1) // 12})")
+                problemas.append(f"{plat} · {codigo}: {n} linhas {quando} — vale a primeira da planilha")
+    return specs, problemas
 
 
 def modulo_to_plataforma(modulo):
@@ -126,42 +147,44 @@ def modulo_to_plataforma(modulo):
     return None
 
 
-def get_spec(mneu, modulo, mestre_by_mneu, bd_fallback):
-    mneu = mneu.strip().upper()
-    candidatos = mestre_by_mneu.get(mneu, [])
-    if not candidatos:
-        bd = bd_fallback.get(mneu)
-        if bd:
-            return {
-                "fonte": "BD_fallback", "Analito": bd["Analito"],
-                "CV1": bd["CV Máx (%)"], "CV2": bd["CV Máx (%)"],
-                "CV3": bd["CV Máx (%)"], "CV4": bd["CV Máx (%)"],
-                "ETM (%)": bd["ETM (%)"],
-                "ETM Absoluto - Cutoff": None, "ETM Absoluto - Valor": None,
-                "ESM (%)": bd.get("ESM (%)"),
-                "ESM Absoluto - Cutoff": None, "ESM Absoluto - Valor": None,
-            }
+def get_spec(mneu, modulo, specs_by_codigo, ordem_mes=None, estrito=False):
+    """Especificação do teste para a plataforma do módulo, vigente no mês avaliado.
+    ordem_mes = ano × 12 + mês do dado. Vale a linha mais recente com vigência ≤ esse mês: uma
+    mudança com data X vale a partir do mês SEGUINTE ao de X; até o mês de X, inclusive, segue a antiga.
+    1. Plataforma: a do módulo; sem linha dela, a da primeira linha cadastrada (como antes);
+       sem nenhuma plataforma específica, a "Geral" (antigo bd_fallback).
+    2. estrito=True (CIQ do Shift): só a plataforma do módulo — sem outra plataforma nem a Geral.
+       Os códigos do Shift podem coincidir com mnemônicos do Infinity de outro exame (ex.: IGA na
+       Hematologia ≠ IgA do Atellica)."""
+    linhas = specs_by_codigo.get(mneu.strip().upper(), [])
+    plat = modulo_to_plataforma(modulo)
+    if estrito:
+        linhas = [l for l in linhas if plat and l["Plataforma"] == plat]
+    else:
+        especificas = [l for l in linhas if l["Plataforma"] != "Geral"]
+        if especificas:
+            alvo = plat if any(l["Plataforma"] == plat for l in especificas) else especificas[0]["Plataforma"]
+            linhas = [l for l in especificas if l["Plataforma"] == alvo]
+    if ordem_mes is not None:
+        linhas = [l for l in linhas if l["_vigencia"] is None or l["_vigencia"] <= ordem_mes]
+    if not linhas:
         return None
-    escolhido = candidatos[0]
-    if len(candidatos) > 1:
-        plat = modulo_to_plataforma(modulo)
-        if plat:
-            for c in candidatos:
-                if c["Plataforma"] == plat:
-                    escolhido = c
-                    break
+    # a mais recente; empate (mesma data) → a primeira da planilha
+    escolhido = max(linhas, key=lambda l: -1 if l["_vigencia"] is None else l["_vigencia"])
     return {
-        "fonte": "Tabela Mestre", "Analito": escolhido["Analito"],
-        "CV1": escolhido["CV Nível 1 (%)"], "CV2": escolhido["CV Nível 2 (%)"],
-        "CV3": escolhido["CV Nível 3 (%)"], "CV4": escolhido["CV Nível 4 (%)"],
+        "fonte": escolhido["Plataforma"], "Analito": escolhido.get("Analito"),
+        "Vigente a partir de": escolhido.get("Vigente a partir de"),
+        "_vigencia": escolhido.get("_vigencia"),
+        "CV1": escolhido.get("CV Nível 1 (%)"), "CV2": escolhido.get("CV Nível 2 (%)"),
+        "CV3": escolhido.get("CV Nível 3 (%)"), "CV4": escolhido.get("CV Nível 4 (%)"),
         "Níveis Avaliados": escolhido.get("Níveis Avaliados"),
         "Sigma Mínimo": escolhido.get("Sigma Mínimo"),
-        "ETM (%)": escolhido["ETM (%)"],
-        "ETM Absoluto - Cutoff": escolhido["ETM Absoluto - Cutoff"],
-        "ETM Absoluto - Valor": escolhido["ETM Absoluto - Valor"],
-        "ESM (%)": escolhido["ESM/ES (%)"],
-        "ESM Absoluto - Cutoff": escolhido["ESM Absoluto - Cutoff"],
-        "ESM Absoluto - Valor": escolhido["ESM Absoluto - Valor"],
+        "ETM (%)": escolhido.get("ETM (%)"),
+        "ETM Absoluto - Cutoff": escolhido.get("ETM Absoluto - Cutoff"),
+        "ETM Absoluto - Valor": escolhido.get("ETM Absoluto - Valor"),
+        "ESM (%)": escolhido.get("ESM/ES (%)"),
+        "ESM Absoluto - Cutoff": escolhido.get("ESM Absoluto - Cutoff"),
+        "ESM Absoluto - Valor": escolhido.get("ESM Absoluto - Valor"),
     }
 
 
@@ -213,45 +236,63 @@ def extrai_nivel(nome):
     return None
 
 
+def _csvs_dos_arquivos(arquivos):
+    """(nome, bytes) dos arquivos enviados → (nome, bytes) de cada CSV, abrindo os .zip."""
+    for nome, conteudo in arquivos:
+        if nome.lower().endswith(".zip"):
+            with zipfile.ZipFile(io.BytesIO(conteudo)) as z:
+                for n in z.namelist():
+                    if n.lower().endswith(".csv"):
+                        yield Path(n).name, z.read(n)
+        elif nome.lower().endswith(".csv"):
+            yield Path(nome).name, conteudo
+
+
 @st.cache_data(show_spinner=False)
-def parse_zip(zip_bytes):
-    """Lê um .zip com os CSVs mensais do Infinity e retorna a lista de registros brutos."""
+def parse_arquivos(arquivos):
+    """Lê os CSVs de CIQ (soltos ou dentro de .zip) e retorna a lista de registros brutos.
+    arquivos: tupla de (nome, bytes). Cada CSV é reconhecido pelo cabeçalho: export do Shift
+    (ciq_shift.py) ou export mensal do Infinity (mês/ano no nome do arquivo)."""
     records = []
     skipped = []
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
-        csv_names = [n for n in z.namelist() if n.lower().endswith(".csv")]
-        for name in csv_names:
-            fname = Path(name).name
-            modulo, mes, ano = parse_filename(fname)
-            if mes is None:
-                skipped.append((fname, "mês/ano não identificado no nome do arquivo"))
+    csvs = list(_csvs_dos_arquivos(arquivos))
+    for fname, conteudo in csvs:
+        raw = ciq_shift.decodifica(conteudo)
+        if ciq_shift.eh_shift(raw):
+            recs_shift, avisos = ciq_shift.ler_shift(raw, fname)
+            for r in recs_shift:
+                r["Nível"] = norm_nivel(r["Nível"])
+            records.extend(recs_shift)
+            skipped.extend(avisos)
+            continue
+        # export do Infinity
+        modulo, mes, ano = parse_filename(fname)
+        if mes is None:
+            skipped.append((fname, "mês/ano não identificado no nome do arquivo"))
+            continue
+        reader = pd.read_csv(io.StringIO(raw), sep=";", dtype=str, **SO_VAZIO_E_NA)
+        for _, row in reader.iterrows():
+            teste = (row.get("Teste") or "").strip() if pd.notna(row.get("Teste")) else ""
+            if not teste:
                 continue
-            try:
-                raw = z.read(name).decode("utf-8-sig")
-            except UnicodeDecodeError:
-                raw = z.read(name).decode("latin-1")
-            reader = pd.read_csv(io.StringIO(raw), sep=";", dtype=str, **SO_VAZIO_E_NA)
-            for _, row in reader.iterrows():
-                teste = (row.get("Teste") or "").strip() if pd.notna(row.get("Teste")) else ""
-                if not teste:
-                    continue
-                nivel_raw = row.get("Controlos de CQ")
-                nivel_raw = nivel_raw if pd.notna(nivel_raw) else None
-                if nivel_raw and str(nivel_raw).upper().startswith("COMP"):
-                    continue  # harmonização - fora do módulo de CIQ
-                records.append({
-                    "Arquivo": fname,
-                    "Módulo/Arquivo": modulo,
-                    "Ano": ano, "Mês": mes,
-                    "Equipamento": str(row.get("Equipamento") or "").strip(),
-                    "Teste": teste,
-                    "Nível": norm_nivel(nivel_raw),
-                    "Número de lote": str(row.get("Número de lote") or "").strip().rstrip("."),
-                    "N": to_float(row.get("N")),
-                    "Config. valor alvo": to_float(row.get("Config. valor alvo")),
-                    "Média": to_float(row.get("Média")),
-                    "CV (%)": to_float(row.get("CV (%)")),
-                })
+            nivel_raw = row.get("Controlos de CQ")
+            nivel_raw = nivel_raw if pd.notna(nivel_raw) else None
+            if nivel_raw and str(nivel_raw).upper().startswith("COMP"):
+                continue  # harmonização - fora do módulo de CIQ
+            records.append({
+                "Arquivo": fname,
+                "Fonte CIQ": "Infinity",
+                "Módulo/Arquivo": modulo,
+                "Ano": ano, "Mês": mes,
+                "Equipamento": str(row.get("Equipamento") or "").strip(),
+                "Teste": teste,
+                "Nível": norm_nivel(nivel_raw),
+                "Número de lote": str(row.get("Número de lote") or "").strip().rstrip("."),
+                "N": to_float(row.get("N")),
+                "Config. valor alvo": to_float(row.get("Config. valor alvo")),
+                "Média": to_float(row.get("Média")),
+                "CV (%)": to_float(row.get("CV (%)")),
+            })
     # Remove linhas exatamente duplicadas (ex: o mesmo arquivo entrando duas
     # vezes no ZIP), que inflariam indevidamente médias e contagens.
     vistos = set()
@@ -262,7 +303,7 @@ def parse_zip(zip_bytes):
             vistos.add(chave)
             unicos.append(r)
     records = unicos
-    return records, skipped, len(csv_names)
+    return records, skipped, len(csvs)
 
 
 # Controles Bio-Rad (e afins): o último dígito do lote é o nível (85771 → 1,
@@ -377,11 +418,13 @@ def calc_sigma_abs(etm_abs, media, target_abs, cv_pct):
     return clip((etm_abs - abs(media - target_abs)) / sd, 0, 10)
 
 
-def processa(recs, mestre_by_mneu, bd_fallback, equip_depara, margem=0.05, n_minimo=5):
+def processa(recs, specs_by_codigo, equip_depara, margem=0.05, n_minimo=5):
     for r in recs:
         r["Equip Mapeado"] = r["Equipamento"] in equip_depara
         r["Equipamento (nome)"] = equip_depara.get(r["Equipamento"], {}).get("Célula/Rotor", r["Equipamento"])
-        r["Tipo"] = equip_depara.get(r["Equipamento"], {}).get("Tipo", "?")
+        # sem cadastro no equipamentos.xlsx: Shift usa o próprio módulo (ABC, Hematologia) como tipo
+        tipo_padrao = r["Módulo/Arquivo"].upper() if r.get("Fonte CIQ") == "Shift" else "?"
+        r["Tipo"] = equip_depara.get(r["Equipamento"], {}).get("Tipo", tipo_padrao)
 
         # Volume insuficiente (N <= n_minimo): não há análise confiável possível
         # nessa linha específica. Zera CV(%), Bias(%) e toda a análise, mantendo
@@ -405,7 +448,9 @@ def processa(recs, mestre_by_mneu, bd_fallback, equip_depara, margem=0.05, n_min
             r["Status Erro Total"] = None
             continue
 
-        spec = get_spec(r["Teste"], r["Módulo/Arquivo"], mestre_by_mneu, bd_fallback)
+        # especificação vigente no mês do dado (mudanças na planilha não alteram meses anteriores)
+        spec = get_spec(r["Teste"], r["Módulo/Arquivo"], specs_by_codigo, ordem_mes=r["Ano"] * 12 + r["Mês"],
+                        estrito=r.get("Fonte CIQ") == "Shift")
         r["Spec"] = spec
         r["Bias (%)"] = calc_bias(r["Média"], r["Config. valor alvo"])
 
@@ -426,7 +471,7 @@ def processa(recs, mestre_by_mneu, bd_fallback, equip_depara, margem=0.05, n_min
 
         r["Spec - Analito"] = spec["Analito"]
 
-        # Nível não avaliado (fora da lista "Níveis Avaliados" da tabela_mestre):
+        # Nível não avaliado (fora da lista "Níveis Avaliados" da especificacoes.xlsx):
         # mesmo tratamento do "sem especificação" — mantém CV(%)/Bias(%) brutos,
         # mas sem status/limites, já que não há critério de avaliação pra esse nível.
         niveis_raw = spec.get("Níveis Avaliados")
@@ -647,10 +692,14 @@ def calcula_sigma_periodos_df(df_filtrado):
 # UI
 # ============================================================
 st.title("Desempenho Analítico")
-st.caption("Grupo Sabin · Módulos: CIQ (Infinity) · EP (CAP e ControlLab) · Comparabilidade (em breve)")
+st.caption("Grupo Sabin · Módulos: CIQ (Infinity e Shift) · EP (CAP e ControlLab) · Comparabilidade (em breve)")
 
-mestre_by_mneu, bd_fallback, equip_depara, testes_excluidos, niveis_depara = load_reference(
+specs_by_codigo, problemas_spec, equip_depara, testes_excluidos, niveis_depara = load_reference(
     _hash_arquivos_referencia())
+if problemas_spec:
+    with st.expander(f"⚠ {len(problemas_spec)} problema(s) na planilha de especificações (especificacoes.xlsx)"):
+        for p in problemas_spec:
+            st.write(f"- {p}")
 
 
 def nome_amigavel_equip(raw):
@@ -669,10 +718,14 @@ with st.sidebar:
     completo = modo_analise == "Completa"
 
     st.header("Dados de entrada")
-    uploaded_zip = st.file_uploader("ZIP com os CSVs mensais do Infinity", type="zip")
+    arquivos_ciq = st.file_uploader(
+        "CIQ: ZIP com os CSVs do Infinity e/ou CSVs do Shift", type=["zip", "csv"],
+        accept_multiple_files=True,
+        help="Pode misturar: o app reconhece cada CSV pelo cabeçalho (Infinity ou Shift). Os do "
+             "Infinity precisam do mês no nome (ex.: Abr_26); no Shift o mês vem dentro do arquivo.")
     st.caption(
         "A tabela de especificações (ETM, ESM, CV Máximo por nível) já vem "
-        "embutida no app — só é preciso subir os dados novos do Infinity."
+        "embutida no app — só é preciso subir os dados novos do Infinity e/ou do Shift."
     )
     pacote_ep = st.file_uploader(
         "Base de EP (.zip) — opcional", type="zip", key="pacote_ep",
@@ -696,16 +749,16 @@ with st.sidebar:
             "do limite (CV Máximo, Bias Máximo ou ETM, conforme a aba)."
         )
 
-if uploaded_zip is None:
-    st.info("Envie o arquivo .zip com os exports mensais do Infinity para começar.")
+if not arquivos_ciq:
+    st.info("Envie o .zip com os exports mensais do Infinity e/ou os CSVs do Shift para começar.")
     st.stop()
 
 with st.spinner("Lendo arquivos..."):
-    recs, skipped, n_files = parse_zip(uploaded_zip.getvalue())
+    recs, skipped, n_files = parse_arquivos(tuple((f.name, f.getvalue()) for f in arquivos_ciq))
     if testes_excluidos:
         recs = [r for r in recs if r["Teste"].strip().upper() not in testes_excluidos]
     recs = atribui_niveis(recs, niveis_depara)
-    recs = processa(recs, mestre_by_mneu, bd_fallback, equip_depara, margem=margem)
+    recs = processa(recs, specs_by_codigo, equip_depara, margem=margem)
     recs, series = calcula_tendencia(recs)
 
 st.success(
@@ -716,6 +769,14 @@ if skipped:
     with st.expander(f"⚠ {len(skipped)} arquivo(s) não processado(s)"):
         for fname, motivo in skipped:
             st.write(f"- **{fname}**: {motivo}")
+
+sem_breakpoint = [r for r in recs if r.get("Sem BreakPoint") and (r["N"] or 0) > 5]
+if sem_breakpoint:
+    with st.expander(f"⚠ Shift: {len(sem_breakpoint)} linha(s) sem XM/CV do BreakPoint — ficaram sem análise"):
+        st.caption("O Shift não trouxe XMBreakPoint/CVBreakPoint nessas linhas, que são a média e o CV usados "
+                   "pelo app. Elas aparecem só com os dados brutos (N, lote, valor-alvo).")
+        st.dataframe(pd.DataFrame(sem_breakpoint)[["Equipamento", "Teste", "Nível", "Número de lote", "N"]],
+                     hide_index=True, use_container_width=True)
 
 if testes_excluidos:
     with st.expander(f"ℹ️ {len(testes_excluidos)} teste(s) reflexo excluído(s) da análise"):
@@ -1191,9 +1252,9 @@ with tab_grafico:
                 cvmax = serie["CV Máximo"].dropna()
                 if not cvmax.empty:
                     fig.add_trace(go.Scatter(
-                        x=serie["Mês/Ano"], y=[cvmax.iloc[-1]] * len(serie),
+                        x=serie["Mês/Ano"], y=serie["CV Máximo"],
                         mode="lines", name=f"{equip} - CV Máximo",
-                        line=dict(color=cor, width=1.2, dash="dash"), opacity=0.6,
+                        line=dict(color=cor, width=1.2, dash="dash", shape="hv"), opacity=0.6,
                     ))
 
             fig.update_layout(
@@ -1314,10 +1375,12 @@ with tab_grafico:
 
         # --- Tabela de CV mensal + Pooled ---
         linhas_cv = []
+        limites_cv = {}   # (equipamento, nível) → {mês: CV Máximo vigente naquele mês}
         for (equip, nivel), grupo in base_ct.groupby(["Equipamento (nome)", "NívelNum"]):
             grupo = grupo.sort_values("_ordem_tempo")
             cvmax = grupo["CV Máximo"].dropna()
-            cvmax_val = cvmax.iloc[0] if not cvmax.empty else None
+            cvmax_val = cvmax.iloc[-1] if not cvmax.empty else None   # o vigente mais recente
+            limites_cv[(equip, int(nivel))] = dict(zip(grupo["Mês/Ano"], grupo["CV Máximo"]))
             linha = {"Equipamento": equip, "Nível": int(nivel), "CV Máximo": cvmax_val}
             for _, r in grupo.iterrows():
                 if pd.notna(r["CV (%)"]):
@@ -1346,12 +1409,14 @@ with tab_grafico:
         df_cv_tab = df_cv_tab.sort_values(["Equipamento", "Nível"])
 
         def cor_cv_tab(row):
-            cvmax = row["CV Máximo"]
+            # cada mês é comparado com o CV Máximo vigente NAQUELE mês (especificação com vigência)
+            lims = limites_cv.get((row["Equipamento"], row["Nível"]), {})
             estilos = []
             for col in row.index:
-                if col in (meses_ct + ["CV Pooled (%)", "Pior CV (%)"]) and pd.notna(row[col]) and pd.notna(cvmax):
-                    val = row[col]
-                    estilos.append(cor_faixa(val, cvmax))
+                lim = (lims.get(col) if col in meses_ct else
+                       lims.get(row["Mês do pior"]) if col == "Pior CV (%)" else row["CV Máximo"])
+                if col in (meses_ct + ["CV Pooled (%)", "Pior CV (%)"]) and pd.notna(row[col]) and pd.notna(lim):
+                    estilos.append(cor_faixa(row[col], lim))
                 else:
                     estilos.append("")
             return estilos
@@ -1478,14 +1543,14 @@ with tab_bias:
                     bmax = serie["Bias Máximo"].dropna()
                     if not bmax.empty:
                         fig_b.add_trace(go.Scatter(
-                            x=serie["Mês/Ano"], y=[bmax.iloc[-1]] * len(serie),
+                            x=serie["Mês/Ano"], y=serie["Bias Máximo"],
                             mode="lines", name=f"{equip} - Bias Máximo (+)",
-                            line=dict(color=cor, width=1.2, dash="dash"), opacity=0.6,
+                            line=dict(color=cor, width=1.2, dash="dash", shape="hv"), opacity=0.6,
                         ))
                         fig_b.add_trace(go.Scatter(
-                            x=serie["Mês/Ano"], y=[-bmax.iloc[-1]] * len(serie),
+                            x=serie["Mês/Ano"], y=-serie["Bias Máximo"],
                             mode="lines", name=f"{equip} - Bias Máximo (−)",
-                            line=dict(color=cor, width=1.2, dash="dash"), opacity=0.6,
+                            line=dict(color=cor, width=1.2, dash="dash", shape="hv"), opacity=0.6,
                             showlegend=False,
                         ))
                 fig_b.add_hline(y=0, line=dict(color="#999999", width=1))
@@ -1543,14 +1608,14 @@ with tab_bias:
                     bmax = serie["Bias Máximo"].dropna()
                     if not bmax.empty:
                         fig_b.add_trace(go.Scatter(
-                            x=serie["Mês/Ano"], y=[bmax.iloc[-1]] * len(serie),
+                            x=serie["Mês/Ano"], y=serie["Bias Máximo"],
                             mode="lines", name=f"Nível {int(nivel)} - Bias Máximo (+)",
-                            line=dict(color=cor, width=1.2, dash="dash"), opacity=0.6,
+                            line=dict(color=cor, width=1.2, dash="dash", shape="hv"), opacity=0.6,
                         ))
                         fig_b.add_trace(go.Scatter(
-                            x=serie["Mês/Ano"], y=[-bmax.iloc[-1]] * len(serie),
+                            x=serie["Mês/Ano"], y=-serie["Bias Máximo"],
                             mode="lines", name=f"Nível {int(nivel)} - Bias Máximo (−)",
-                            line=dict(color=cor, width=1.2, dash="dash"), opacity=0.6,
+                            line=dict(color=cor, width=1.2, dash="dash", shape="hv"), opacity=0.6,
                             showlegend=False,
                         ))
                 fig_b.add_hline(y=0, line=dict(color="#999999", width=1))
@@ -1596,10 +1661,12 @@ with tab_bias:
                         .set_index("Mês/Ano")["_ordem_tempo"].to_dict())
 
         linhas_bt = []
+        limites_bt = {}   # (equipamento, nível) → {mês: Bias Máximo vigente naquele mês}
         for (equip, nivel), grupo in base_bt.groupby(["Equipamento (nome)", "NívelNum"]):
             grupo = grupo.sort_values("_ordem_tempo")
             bmax = grupo["Bias Máximo"].dropna()
-            bmax_val = bmax.iloc[0] if not bmax.empty else None
+            bmax_val = bmax.iloc[-1] if not bmax.empty else None   # o vigente mais recente
+            limites_bt[(equip, int(nivel))] = dict(zip(grupo["Mês/Ano"], grupo["Bias Máximo"]))
             linha = {"Equipamento": equip, "Nível": int(nivel), "Bias Máximo": bmax_val}
             for _, r in grupo.iterrows():
                 if pd.notna(r["Bias Observado (sinal)"]):
@@ -1625,12 +1692,14 @@ with tab_bias:
         df_bias_tab = df_bias_tab.sort_values(["Equipamento", "Nível"])
 
         def cor_bias_tab(row):
-            bmax = row["Bias Máximo"]
+            # cada mês é comparado com o Bias Máximo vigente NAQUELE mês (especificação com vigência)
+            lims = limites_bt.get((row["Equipamento"], row["Nível"]), {})
             estilos = []
             for col in row.index:
-                if col in (meses_bt + ["Bias Médio", "Pior Bias"]) and pd.notna(row[col]) and pd.notna(bmax):
-                    val = abs(row[col])
-                    estilos.append(cor_faixa(val, bmax))
+                lim = (lims.get(col) if col in meses_bt else
+                       lims.get(row["Mês do pior"]) if col == "Pior Bias" else row["Bias Máximo"])
+                if col in (meses_bt + ["Bias Médio", "Pior Bias"]) and pd.notna(row[col]) and pd.notna(lim):
+                    estilos.append(cor_faixa(abs(row[col]), lim))
                 else:
                     estilos.append("")
             return estilos
@@ -1699,9 +1768,9 @@ with tab_et:
                     etm = serie["ETM (para comparação)"].dropna()
                     if not etm.empty:
                         fig_e.add_trace(go.Scatter(
-                            x=serie["Mês/Ano"], y=[etm.iloc[-1]] * len(serie),
+                            x=serie["Mês/Ano"], y=serie["ETM (para comparação)"],
                             mode="lines", name=f"{equip} - ETM",
-                            line=dict(color=cor, width=1.2, dash="dash"), opacity=0.6,
+                            line=dict(color=cor, width=1.2, dash="dash", shape="hv"), opacity=0.6,
                         ))
                 fig_e.update_layout(
                     xaxis_title="Mês/Ano", **EIXO_MESES, yaxis_title="Erro Total (%) ou valor absoluto",
@@ -1751,9 +1820,9 @@ with tab_et:
                     etm = serie["ETM (para comparação)"].dropna()
                     if not etm.empty:
                         fig_e.add_trace(go.Scatter(
-                            x=serie["Mês/Ano"], y=[etm.iloc[-1]] * len(serie),
+                            x=serie["Mês/Ano"], y=serie["ETM (para comparação)"],
                             mode="lines", name=f"Nível {int(nivel)} - ETM",
-                            line=dict(color=cor, width=1.2, dash="dash"), opacity=0.6,
+                            line=dict(color=cor, width=1.2, dash="dash", shape="hv"), opacity=0.6,
                         ))
                 fig_e.update_layout(
                     xaxis_title="Mês/Ano", **EIXO_MESES, yaxis_title="Erro Total (%) ou valor absoluto",
@@ -1789,7 +1858,7 @@ with tab_tabela:
     if f_tend:
         df_filtrado = df_filtrado[df_filtrado["Tendência CV"] != "—"]
 
-    cols_show = ["Mês/Ano", "Tipo", "Equipamento (nome)", "Teste", "Spec - Analito", "Nível", "NívelNum",
+    cols_show = ["Mês/Ano", "Fonte CIQ", "Tipo", "Equipamento (nome)", "Teste", "Spec - Analito", "Nível", "NívelNum",
                  "NívelOrigem", "Número de lote", "N", "Config. valor alvo", "Média", "CV (%)", "CV Máximo",
                  "Status CV", "Tendência CV", "Bias (%)", "Sigma Mensal", "Sigma Mínimo", "Status Sigma",
                  "Classificação Sigma (Westgard)", "Critério Sigma"]
@@ -2471,9 +2540,9 @@ if completo:
 
         # Critério para definição do pior cenário do Sigma (mesma célula da planilha), por analito:
         # None = pior cenário entre os níveis; número = só aquele nível. A escolha fica guardada
-        # por teste durante a sessão; o padrão pode vir da coluna "Nível Sigma" da tabela_mestre.
+        # por teste durante a sessão; o padrão pode vir da coluna "Nível Sigma" da especificacoes.xlsx.
         def nivel_sigma_padrao(teste):
-            for linha in mestre_by_mneu.get(str(teste).strip().upper(), []):
+            for linha in specs_by_codigo.get(str(teste).strip().upper(), []):
                 try:
                     return int(float(linha.get("Nível Sigma")))
                 except (TypeError, ValueError):
@@ -2753,7 +2822,9 @@ with mod_ac:
         mostrar_previa = st.toggle(
             "Mostrar aqui os gráficos e tabelas que vão para o PDF", value=True, key="ac_previa",
             help="São os mesmos desenhos do PDF. Desligue se quiser a aba mais leve enquanto escreve.")
-        spec_ac = next((s for s in ciq_ac["Spec"] if isinstance(s, dict)), None)
+        # especificação vigente no mês de referência (o mais recente com especificação)
+        spec_ac = next((s for s in ciq_ac.sort_values("_ordem_tempo", ascending=False)["Spec"]
+                        if isinstance(s, dict)), None)
         # só as colunas que os gráficos usam (deixa o cache dos gráficos leve)
         ciq_graf = ciq_ac[["Equipamento (nome)", "NívelNum", "_ordem_tempo", "Mês/Ano", "N", "CV (%)", "CV Máximo",
                            "Bias Observado (sinal)", "Bias Máximo", "Erro Total Observado", "ETM (para comparação)",
