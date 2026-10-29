@@ -1,0 +1,13 @@
+# Não subir para o GitHub:
+# base de EP e arquivos originais: vão pelo "pacote de EP" (.zip), não pelo GitHub
+dados_ep/
+# cópias de segurança e arquivos temporários
+app_20*.py
+*_backup_*.xlsx
+__pycache__/
+.vscode/
+~$*
+# pacotes do app e de EP: têm dados do laboratório — ficam no OneDrive, nunca no GitHub
+pacote_app_*.zip
+pacote_ep*.zip
+*.zip

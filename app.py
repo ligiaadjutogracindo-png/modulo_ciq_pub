@@ -23,6 +23,7 @@ import analise_critica
 import ciq_shift
 import ep_base
 import ep_calculo
+import visao_geral
 
 # ============================================================
 # CONFIGURAÇÃO
@@ -185,6 +186,7 @@ def get_spec(mneu, modulo, specs_by_codigo, ordem_mes=None, estrito=False):
         "ESM (%)": escolhido.get("ESM/ES (%)"),
         "ESM Absoluto - Cutoff": escolhido.get("ESM Absoluto - Cutoff"),
         "ESM Absoluto - Valor": escolhido.get("ESM Absoluto - Valor"),
+        "Setor": str(escolhido.get("Setor") or "").strip() or None,
     }
 
 
@@ -496,6 +498,11 @@ def processa(recs, specs_by_codigo, equip_depara, margem=0.05, n_minimo=5):
         # sem cadastro no equipamentos.xlsx: Shift usa o próprio módulo (ABC, Hematologia) como tipo
         tipo_padrao = r["Módulo/Arquivo"].upper() if r.get("Fonte CIQ") == "Shift" else "?"
         r["Tipo"] = equip_depara.get(r["Equipamento"], {}).get("Tipo", tipo_padrao)
+        # Setor (Dashboard): coluna "Setor" da especificacoes.xlsx, por teste; sem ela, o tipo do equipamento.
+        # Calculado antes da regra de N ≤ 5, para o teste aparecer no setor certo mesmo sem análise no mês.
+        spec_setor = get_spec(r["Teste"], r["Módulo/Arquivo"], specs_by_codigo, ordem_mes=r["Ano"] * 12 + r["Mês"],
+                              estrito=r.get("Fonte CIQ") == "Shift")
+        r["Setor"] = (spec_setor or {}).get("Setor") or str(r["Tipo"]).capitalize()
 
         # Volume insuficiente (N <= n_minimo): não há análise confiável possível
         # nessa linha específica. Zera CV(%), Bias(%) e toda a análise, mantendo
@@ -1107,8 +1114,249 @@ with mod_comp:
         "que hoje ficam fora do CIQ — eles serão a base deste módulo."
     )
 
-# ---------------- DASHBOARD ----------------
+# ---------------- DASHBOARD (visão geral: laboratório → setor → teste) ----------------
+# Cálculos em visao_geral.py. Aqui só a tela. Cor só para problema: vermelho = fora da especificação,
+# âmbar = piorando; o resto fica em cinza.
+COR_FORA, COR_ATENCAO, COR_NEUTRA, COR_TEXTO_SUAVE = "#C62828", "#E69F00", "#9E9E9E", "#616161"
+
+
+def avalia_dashboard(registros):
+    """Mesmas regras do mês (processa), sem faixa amarela: no Dashboard só existe dentro ou fora."""
+    return processa(registros, specs_by_codigo, equip_depara, margem=None)
+
+
+@st.cache_data(show_spinner="Calculando a visão geral...", max_entries=8)
+def dados_dashboard(base, tipo, completo, lim_cv, confianca, queda_sigma, assinatura_ref):
+    agr = visao_geral.agrega(base, tipo, avalia_dashboard, completo=completo)
+    return visao_geral.marca_piorando(agr, lim_cv, confianca, queda_sigma, completo=completo)
+
+
 with tab_dash:
+    # base: todos os meses (o período anterior ao da referência precisa existir para o "piorando"),
+    # filtrada pelo Módulo/Plataforma da barra lateral
+    base_dash = df_ciq_total if not f_tipo_global else df_ciq_total[df_ciq_total["Tipo"].isin(f_tipo_global)]
+    colunas_base = ["Teste", "Equipamento", "Equipamento (nome)", "NívelNum", "Nível", "Setor", "Fonte CIQ",
+                    "Módulo/Arquivo", "Ano", "Mês", "_ordem_tempo", "N", "Média", "Config. valor alvo", "CV (%)",
+                    "CV Máximo", "Bias (%)", "Bias Observado", "Bias Máximo", "Erro Total Observado",
+                    "ETM (para comparação)", "Sigma Mensal"] + visao_geral.STATUS
+    base_dash = base_dash[[c for c in colunas_base if c in base_dash.columns]]
+
+    c_tit, c_per, c_set = st.columns([3, 1.3, 1.7], vertical_alignment="bottom")
+    c_tit.subheader("Visão geral do CIQ")
+    tipo_per = c_per.segmented_control("Período", ["Mensal", "Trimestral"], default="Mensal", required=True,
+                                       key="dash_periodo")
+    setores = sorted(base_dash["Setor"].dropna().unique())
+    setor_sel = c_set.selectbox("Setor", ["Laboratório (todos)"] + setores, key="dash_setor")
+    por_setor = setor_sel != "Laboratório (todos)"
+
+    with st.expander("Regras do \"piorando\""):
+        r1, r2, r3 = st.columns(3)
+        lim_cv = r1.number_input("CV subiu pelo menos (%)", 1, 100, 10, 1, key="dash_lim_cv") / 100
+        confianca = r2.number_input("Confiança do teste F (%)", 80, 99, 95, 1, key="dash_conf") / 100
+        queda_sigma = r3.number_input("Sigma caiu pelo menos (pontos)", 0.1, 5.0, 1.0, 0.1, key="dash_sigma",
+                                      disabled=not completo)
+        st.caption(
+            "Só entra quem está **dentro da especificação** no período. CV: compara o CV pooled do período com o do "
+            "período anterior; precisa subir o percentual acima **e** o teste F (variâncias) ser significativo — sem "
+            "o teste F, um aumento de 10% aparece por acaso em cerca de 1/3 dos sistemas todo mês. Sigma: caiu os "
+            "pontos acima **e** ficou abaixo de 6." + ("" if completo else " (Sigma desligado no modo Simples.)"))
+
+    agr = dados_dashboard(base_dash, tipo_per, completo, lim_cv, confianca, queda_sigma,
+                          _hash_arquivos_referencia())
+    ord_fim = int(df_ciq_total.loc[df_ciq_total["Mês/Ano"] == f_periodo_global[1], "_ordem_tempo"].iloc[0])
+    ord_ini = int(df_ciq_total.loc[df_ciq_total["Mês/Ano"] == f_periodo_global[0], "_ordem_tempo"].iloc[0])
+    ano_f, mes_f = divmod(ord_fim - 1, 12)
+    ano_i, mes_i = divmod(ord_ini - 1, 12)
+    per_ref = visao_geral.chave_periodo(ano_f, mes_f + 1, tipo_per)
+    per_ini = visao_geral.chave_periodo(ano_i, mes_i + 1, tipo_per)
+    rot = lambda p: visao_geral.rotulo_periodo(p, tipo_per)
+
+    if por_setor:
+        agr = agr[agr["Setor"] == setor_sel]
+    ref = agr[agr["Período"] == per_ref]
+    ant = agr[agr["Período"] == per_ref - 1]
+    meses_no_ref = int(ref["Meses"].max()) if not ref.empty else 0
+    parcial = (f" · trimestre parcial ({meses_no_ref} de 3 meses)"
+               if tipo_per == "Trimestral" and 0 < meses_no_ref < 3 else "")
+    st.caption(f"**{setor_sel}** · referência **{rot(per_ref)}**"
+               + (f", comparado com {rot(per_ref - 1)}" if not ant.empty else " · sem dados do período anterior")
+               + parcial + ". O fim do período da barra lateral define a referência.")
+
+    resumo = visao_geral.resumo_testes(agr, per_ref)
+    resumo_ant = visao_geral.resumo_testes(agr, per_ref - 1)
+    if resumo.empty:
+        st.info(f"Nenhum teste com especificação e dados suficientes em {rot(per_ref)}.")
+    else:
+        # ---- 1. A resposta: KPIs ----
+        acao = resumo[resumo["Situação"] == "Fora"]
+        piorando = resumo[(resumo["Situação"] == "Dentro") & resumo["Piorando"]]
+        av_ref = ref[ref["Situação"].notna()]
+        pct = (av_ref["Situação"] == "Dentro").mean() * 100
+        av_ant = ant[ant["Situação"].notna()]
+        pct_ant = (av_ant["Situação"] == "Dentro").mean() * 100 if not av_ant.empty else None
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Testes avaliados", len(resumo),
+                  help="Testes com especificação e N > 5 em pelo menos um sistema/nível no período.")
+        k2.metric("Precisam de ação", len(acao),
+                  delta=None if resumo_ant.empty else len(acao) - int((resumo_ant["Situação"] == "Fora").sum()),
+                  delta_color="inverse",
+                  help="Algum sistema/nível do teste ficou fora em CV, Bias, Erro Total"
+                       + (" ou Sigma." if completo else "."))
+        k3.metric("Piorando, dentro da meta", len(piorando),
+                  help="Dentro da especificação, mas com CV ou Sigma piorando em relação ao período anterior.")
+        k4.metric("Sistemas dentro da especificação", f"{pct:.0f}%",
+                  delta=None if pct_ant is None else f"{pct - pct_ant:+.1f} p.p.",
+                  help=f"{int((av_ref['Situação'] == 'Dentro').sum())} de {len(av_ref)} combinações teste × "
+                       "equipamento × nível.")
+
+        # ---- 2. Distribuição do Sigma (pior Sigma de cada teste) ----
+        if completo:
+            fx = visao_geral.faixas_sigma(resumo)
+            total_fx = sum(fx.values())
+            if total_fx:
+                cores_fx = {"< 3": COR_FORA, "3 a 4": COR_ATENCAO, "4 a 6": "#BDBDBD", "≥ 6": "#E0E0E0"}
+                fig_fx = go.Figure()
+                for nome, n in fx.items():
+                    if n:
+                        fig_fx.add_trace(go.Bar(
+                            x=[n], y=[""], orientation="h", name=f"Sigma {nome}", marker_color=cores_fx[nome],
+                            text=f"Sigma {nome}: {n}" if n / total_fx >= 0.12 else "",
+                            textposition="inside", insidetextanchor="middle",
+                            textfont=dict(color="white" if nome in ("< 3", "3 a 4") else "#424242"),
+                            hovertemplate=f"Sigma {nome}: {n} teste(s)<extra></extra>"))
+                fig_fx.update_layout(barmode="stack", height=90, showlegend=False, margin=dict(l=0, r=0, t=26, b=0),
+                                     xaxis=dict(visible=False, range=[0, total_fx]), yaxis=dict(visible=False),
+                                     title=dict(text=f"Pior Sigma de cada teste em {rot(per_ref)}",
+                                                font=dict(size=14), x=0, y=0.98))
+                st.plotly_chart(fig_fx, use_container_width=True, config={"displayModeBar": False})
+                st.markdown(" · ".join(
+                    f"<span style='color:{cores_fx[nome] if nome in ('< 3', '3 a 4') else COR_TEXTO_SUAVE}'>"
+                    f"■</span> Sigma {nome}: **{n}**" for nome, n in fx.items()), unsafe_allow_html=True)
+
+        # ---- 3. Listas: precisam de ação × piorando ----
+        base_mensal = visao_geral.um_lote_por_mes(base_dash)
+        ord_ref_fim = ord_fim
+
+        def o_que_esta_fora(teste):
+            linhas = ref[(ref["Teste"] == teste) & (ref["Situação"] == "Fora")]
+            itens = []
+            for nome, col in (("CV", "Status CV"), ("Bias", "Status Bias"), ("Erro Total", "Status Erro Total"),
+                              ("Sigma", "Status Sigma")):
+                if (nome != "Sigma" or completo) and (linhas[col] == "VERMELHO").any():
+                    itens.append(nome)
+            return ", ".join(itens)
+
+        col_a, col_p = st.container(), st.container()
+        with col_a:
+            st.markdown(f"#### Precisam de ação · {len(acao)}")
+            if acao.empty:
+                st.caption("Nenhum teste fora da especificação no período.")
+            else:
+                tab_acao = acao.assign(
+                    **{"Fora em": acao["Teste"].map(o_que_esta_fora),
+                       "Sistemas": [f"{f} de {s}" for f, s in zip(acao["Sistemas fora"], acao["Sistemas"])],
+                       "Uso da meta": acao["Teste"].map(lambda t: max(
+                           (u for u in ref[ref["Teste"] == t].apply(visao_geral.uso_da_meta, axis=1) if pd.notna(u)),
+                           default=None))}
+                ).sort_values("Uso da meta", ascending=False)
+                st.dataframe(
+                    tab_acao[["Teste", "Setor", "Fora em", "Sistemas", "Uso da meta"] + (["Pior Sigma"] if completo else [])],
+                    hide_index=True, use_container_width=True, height=min(420, 38 + 35 * len(tab_acao)),
+                    column_config={
+                        "Sistemas": st.column_config.TextColumn("Sistemas fora",
+                                                                help="Equipamento × nível fora / avaliados"),
+                        "Uso da meta": st.column_config.NumberColumn(
+                            "Pior uso da meta", format="percent",
+                            help="Maior razão entre CV/CV Máx, Bias/Bias Máx e Erro Total/ETM. Acima de 100% = fora."),
+                        "Pior Sigma": st.column_config.NumberColumn(format="%.2f")})
+        with col_p:
+            st.markdown(f"#### Piorando, mas dentro da meta · {len(piorando)}")
+            pior_sis = ref[ref["Piorando"].notna() & ref["Teste"].isin(piorando["Teste"])]
+            if ant.empty:
+                st.caption(f"Sem dados de {rot(per_ref - 1)} para comparar.")
+            elif pior_sis.empty:
+                st.caption("Nenhum teste dentro da meta com piora relevante.")
+            else:
+                tab_p = pior_sis.assign(
+                    **{"Sistema": [f"{e} · N{n}" for e, n in zip(pior_sis["Equipamento (nome)"], pior_sis["NívelNum"])],
+                       "Uso da meta": pior_sis.apply(visao_geral.uso_da_meta, axis=1),
+                       "CV mês a mês": [visao_geral.serie_cv(base_mensal, t, e, n, ord_ref_fim)
+                                        for t, e, n in zip(pior_sis["Teste"], pior_sis["Equipamento"],
+                                                           pior_sis["NívelNum"])]}
+                ).sort_values("Uso da meta", ascending=False)
+                st.dataframe(
+                    tab_p[["Teste", "Sistema", "Piorando", "Uso da meta", "CV mês a mês"]],
+                    hide_index=True, use_container_width=True, height=min(420, 38 + 35 * len(tab_p)),
+                    column_config={
+                        "Piorando": st.column_config.TextColumn("O que piorou"),
+                        "Uso da meta": st.column_config.ProgressColumn(
+                            "Quanto da meta usa", format="percent", min_value=0, max_value=1,
+                            help="Maior razão entre CV/CV Máx, Bias/Bias Máx e Erro Total/ETM."),
+                        "CV mês a mês": st.column_config.LineChartColumn("CV, últimos 12 meses")})
+
+        # ---- 4. Por setor (só no nível laboratório) ----
+        if not por_setor:
+            st.markdown("#### Por setor")
+            ev_all = visao_geral.evolucao_setor(agr)
+            pct_setor = ev_all[ev_all["Período"] == per_ref].set_index("Setor")["% dentro"]
+            tab_setor = (resumo.groupby("Setor")
+                         .agg(Testes=("Teste", "size"),
+                              **{"Precisam de ação": ("Situação", lambda s: int((s == "Fora").sum()))},
+                              Piorando=("Piorando", lambda s: int(s.sum())))
+                         .reset_index())
+            tab_setor["Piorando"] = [int(((resumo["Setor"] == s) & (resumo["Situação"] == "Dentro")
+                                          & resumo["Piorando"]).sum()) for s in tab_setor["Setor"]]
+            tab_setor["% dentro"] = tab_setor["Setor"].map(pct_setor) / 100
+            tab_setor = tab_setor.sort_values(["Precisam de ação", "% dentro"], ascending=[False, True])
+            st.dataframe(tab_setor, hide_index=True, use_container_width=True,
+                         height=min(460, 38 + 35 * len(tab_setor)),
+                         column_config={"% dentro": st.column_config.ProgressColumn(
+                             "Sistemas dentro da especificação", format="percent", min_value=0, max_value=1)})
+            st.caption("Escolha um setor no alto da página para ver só os testes dele.")
+
+        # ---- 5. Evolução: % dentro da especificação por período ----
+        ev = visao_geral.evolucao_setor(agr)
+        ev = ev[(ev["Período"] >= per_ini) & (ev["Período"] <= per_ref)]
+        alvo_ev = setor_sel if por_setor else "Laboratório"
+        serie_ev = ev[ev["Setor"] == alvo_ev].sort_values("Período")
+        if len(serie_ev) >= 2:
+            st.markdown(f"#### Evolução — {alvo_ev}")
+            fig_ev = go.Figure(go.Scatter(
+                x=[rot(p) for p in serie_ev["Período"]], y=serie_ev["% dentro"], mode="lines+markers+text",
+                text=[f"{v:.0f}%" for v in serie_ev["% dentro"]], textposition="top center",
+                line=dict(color=COR_TEXTO_SUAVE, width=2), marker=dict(size=7),
+                customdata=serie_ev[["Dentro", "Avaliados"]],
+                hovertemplate="%{x}: %{y:.1f}% (%{customdata[0]} de %{customdata[1]} sistemas)<extra></extra>"))
+            fig_ev.update_layout(height=280, margin=dict(l=0, r=0, t=10, b=0),
+                                 yaxis=dict(title="% dentro da especificação", range=[
+                                     max(0, serie_ev["% dentro"].min() - 10), 105]),
+                                 xaxis=dict(type="category"))
+            st.plotly_chart(fig_ev, use_container_width=True, config={"displayModeBar": False})
+            st.caption("Percentual dos sistemas (teste × equipamento × nível) avaliados que ficaram dentro da "
+                       "especificação em todas as avaliações do período.")
+
+        # ---- 6. Detalhes (recolhido) ----
+        with st.expander(f"Ver detalhes — todos os sistemas avaliados em {rot(per_ref)}"):
+            det = ref[ref["Situação"].notna()].assign(**{"Uso da meta": lambda d: d.apply(visao_geral.uso_da_meta,
+                                                                                            axis=1)})
+            cols_det = ["Teste", "Setor", "Equipamento (nome)", "NívelNum", "Situação", "Piorando", "Meses", "N",
+                        "CV (%)", "CV anterior", "p (teste F)", "CV Máximo", "Bias (%)", "Bias Máximo",
+                        "Erro Total", "ETM", "Uso da meta"] + (["Sigma", "Sigma anterior"] if completo else [])
+            st.dataframe(det.sort_values(["Situação", "Uso da meta"], ascending=[False, False])[cols_det],
+                         hide_index=True, use_container_width=True, height=420,
+                         column_config={"Equipamento (nome)": "Equipamento", "NívelNum": "Nível",
+                                        "Uso da meta": st.column_config.NumberColumn(format="percent"),
+                                        **{c: st.column_config.NumberColumn(format="%.2f") for c in
+                                           ["CV (%)", "CV anterior", "CV Máximo", "Bias (%)", "Bias Máximo",
+                                            "Erro Total", "ETM", "Sigma", "Sigma anterior"]},
+                                        "p (teste F)": st.column_config.NumberColumn(format="%.3f")})
+            st.caption("No Trimestral, CV = CV pooled dos meses do trimestre (ponderado por N − 1) e Bias = média "
+                       "dos Bias mensais ponderada pelo N. Bias e Erro Total em % ou em valor absoluto, conforme a "
+                       "especificação do teste.")
+
+    exp_antigo = st.expander("Tabelas da versão anterior do Dashboard (piores cenários)")
+
+with exp_antigo:
     st.subheader("Visão geral — piores cenários (CV, Bias e Erro Total)")
     st.caption(
         "Considera os filtros globais da barra lateral (Período e Módulo/Plataforma). "
