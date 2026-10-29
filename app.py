@@ -248,6 +248,77 @@ def _csvs_dos_arquivos(arquivos):
             yield Path(nome).name, conteudo
 
 
+# ============================================================
+# PACOTE DO APP: CIQ (Infinity + Shift) já lido + base de EP, num .zip só
+# ============================================================
+ARQ_CIQ_PACOTE = "ciq_registros.csv"
+COLUNAS_CIQ = ["Arquivo", "Fonte CIQ", "Módulo/Arquivo", "Ano", "Mês", "Equipamento", "Teste", "Nível",
+               "Número de lote", "N", "Config. valor alvo", "DP alvo", "Média", "CV (%)", "Sem BreakPoint"]
+NUMERICAS_CIQ = ["N", "Config. valor alvo", "DP alvo", "Média", "CV (%)"]
+
+
+def normaliza_ciq(r):
+    """Registro de CIQ sempre com as mesmas chaves e tipos (vindo do export ou do pacote), para que a
+    comparação de duplicados funcione entre as duas origens."""
+    n = {c: r.get(c) for c in COLUNAS_CIQ}
+    for c in ("Arquivo", "Módulo/Arquivo", "Equipamento", "Teste", "Número de lote"):
+        n[c] = str(n[c] or "")
+    n["Fonte CIQ"] = n["Fonte CIQ"] or "Infinity"
+    n["Nível"] = n["Nível"] or None
+    n["Ano"], n["Mês"] = int(n["Ano"]), int(n["Mês"])
+    for c in NUMERICAS_CIQ:
+        n[c] = None if n[c] is None or pd.isna(n[c]) else float(n[c])
+    n["Sem BreakPoint"] = str(n["Sem BreakPoint"]) == "True"
+    return n
+
+
+def ciq_para_csv(recs):
+    return pd.DataFrame([normaliza_ciq(r) for r in recs], columns=COLUNAS_CIQ).to_csv(index=False).encode("utf-8-sig")
+
+
+def ciq_do_pacote(conteudo):
+    """Registros de CIQ guardados num pacote do app (lista vazia se o zip não tiver CIQ)."""
+    with zipfile.ZipFile(io.BytesIO(conteudo)) as z:
+        nomes = {Path(n).name: n for n in z.namelist()}
+        if ARQ_CIQ_PACOTE not in nomes:
+            return []
+        d = pd.read_csv(io.BytesIO(z.read(nomes[ARQ_CIQ_PACOTE])), dtype=str, encoding="utf-8-sig", **SO_VAZIO_E_NA)
+    return [normaliza_ciq({k: (None if pd.isna(v) else v) for k, v in r.items()}) for r in d.to_dict("records")]
+
+
+def separa_pacote(arquivos):
+    """Separa o pacote do app (zip com ciq_registros.csv e/ou ep_resultados.csv) dos exports brutos.
+    Devolve (exports, pacote ou None); com mais de um pacote, vale o último enviado."""
+    exports, pacote = [], None
+    for nome, conteudo in arquivos:
+        if nome.lower().endswith(".zip"):
+            try:
+                internos = {Path(n).name for n in zipfile.ZipFile(io.BytesIO(conteudo)).namelist()}
+            except zipfile.BadZipFile:
+                internos = set()
+            if ARQ_CIQ_PACOTE in internos or "ep_resultados.csv" in internos:
+                pacote = (nome, conteudo)
+                continue
+        exports.append((nome, conteudo))
+    return tuple(exports), pacote
+
+
+def junta_ciq(do_pacote, novos):
+    """Pacote + exports novos. Um export novo SUBSTITUI o que o pacote tinha do mesmo sistema, mês e
+    módulo (ex.: o mês foi reexportado com correções); o resto do pacote é mantido."""
+    novos = [normaliza_ciq(r) for r in novos]
+    chave = lambda r: (r["Fonte CIQ"], r["Ano"], r["Mês"], r["Módulo/Arquivo"])
+    substituidos = {chave(r) for r in novos}
+    mantidos = [r for r in do_pacote if chave(r) not in substituidos]
+    vistos, unicos = set(), []
+    for r in mantidos + novos:
+        k = tuple((c, r[c]) for c in COLUNAS_CIQ if c != "Arquivo")
+        if k not in vistos:
+            vistos.add(k)
+            unicos.append(r)
+    return unicos, len(do_pacote) - len(mantidos)
+
+
 @st.cache_data(show_spinner=False)
 def parse_arquivos(arquivos):
     """Lê os CSVs de CIQ (soltos ou dentro de .zip) e retorna a lista de registros brutos.
@@ -719,20 +790,19 @@ with st.sidebar:
 
     st.header("Dados de entrada")
     arquivos_ciq = st.file_uploader(
-        "CIQ: ZIP com os CSVs do Infinity e/ou CSVs do Shift", type=["zip", "csv"],
+        "Dados: pacote do app e/ou exports do Infinity e do Shift", type=["zip", "csv"],
         accept_multiple_files=True,
-        help="Pode misturar: o app reconhece cada CSV pelo cabeçalho (Infinity ou Shift). Os do "
-             "Infinity precisam do mês no nome (ex.: Abr_26); no Shift o mês vem dentro do arquivo.")
-    st.caption(
-        "A tabela de especificações (ETM, ESM, CV Máximo por nível) já vem "
-        "embutida no app — só é preciso subir os dados novos do Infinity e/ou do Shift."
-    )
-    pacote_ep = st.file_uploader(
-        "Base de EP (.zip) — opcional", type="zip", key="pacote_ep",
-        help="O arquivo pacote_ep.zip (pasta dados_ep do app, ou \"Baixar pacote de EP\" na aba EP). "
-             "Um arquivo só, com CAP e ControlLab juntos — não os zips originais dos provedores. No app "
-             "online, é assim que a base de EP chega: ele não lê os PDFs do CAP nem guarda arquivos.")
-    st.caption("Base de EP: envie só o **pacote_ep.zip** — ele já traz CAP e ControlLab juntos.")
+        help="Pacote do app (.zip baixado aqui mesmo, com CIQ e EP) e/ou exports novos: zip com os CSVs do "
+             "Infinity, CSVs do Shift. O app reconhece cada arquivo sozinho. Um export novo substitui, no "
+             "pacote, o mesmo mês/módulo. Os CSVs do Infinity precisam do mês no nome (ex.: Abr_26).")
+    st.caption("Rotina do mês: suba o **pacote do app** do mês anterior + os exports novos e, depois, baixe o "
+               "pacote atualizado logo abaixo. No dia a dia (e no app online), basta o pacote.")
+    slot_pacote = st.container()   # botão "Baixar pacote do app" — preenchido depois que o EP é carregado
+    with st.expander("Base de EP separada (pacote antigo)"):
+        pacote_ep = st.file_uploader(
+            "Base de EP (.zip) — só para pacotes de EP antigos", type="zip", key="pacote_ep",
+            help="Pacotes gerados antes do pacote do app (só com EP). O pacote do app, no campo acima, já traz "
+                 "o EP — não precisa deste campo.")
     st.header("Margem de proximidade")
     margem_opcao = st.radio(
         "Sinalizar em amarelo quando estiver a quantos % do limite?",
@@ -750,11 +820,31 @@ with st.sidebar:
         )
 
 if not arquivos_ciq:
-    st.info("Envie o .zip com os exports mensais do Infinity e/ou os CSVs do Shift para começar.")
+    st.info("Envie o pacote do app e/ou os exports do Infinity e do Shift para começar.")
     st.stop()
 
+
+class _ArquivoEnviado:
+    """Imita o arquivo do st.file_uploader (name + getvalue) para o EP que vem dentro do pacote do app."""
+    def __init__(self, nome, conteudo):
+        self.name, self._conteudo = nome, conteudo
+
+    def getvalue(self):
+        return self._conteudo
+
+
 with st.spinner("Lendo arquivos..."):
-    recs, skipped, n_files = parse_arquivos(tuple((f.name, f.getvalue()) for f in arquivos_ciq))
+    exports_ciq, pacote_app = separa_pacote(tuple((f.name, f.getvalue()) for f in arquivos_ciq))
+    recs, skipped, n_files = parse_arquivos(exports_ciq)
+    ciq_pacote = ciq_do_pacote(pacote_app[1]) if pacote_app else []
+    recs, n_substituidos = junta_ciq(ciq_pacote, recs)
+    recs_brutos = [dict(r) for r in recs]   # CIQ como lido (antes dos cálculos): é o que vai no pacote
+    if pacote_app and pacote_ep is None:
+        try:
+            if "ep_resultados.csv" in {Path(n).name for n in zipfile.ZipFile(io.BytesIO(pacote_app[1])).namelist()}:
+                pacote_ep = _ArquivoEnviado(*pacote_app)
+        except zipfile.BadZipFile:
+            pass
     if testes_excluidos:
         recs = [r for r in recs if r["Teste"].strip().upper() not in testes_excluidos]
     recs = atribui_niveis(recs, niveis_depara)
@@ -762,7 +852,10 @@ with st.spinner("Lendo arquivos..."):
     recs, series = calcula_tendencia(recs)
 
 st.success(
-    f"{n_files} arquivos lidos · {len(recs)} registros de CIQ processados "
+    (f"📦 Pacote {pacote_app[0]}: {len(ciq_pacote)} registro(s) de CIQ"
+     + (f" ({n_substituidos} substituído(s) pelos exports novos)" if n_substituidos else "") + " · "
+     if pacote_app else "")
+    + f"{n_files} export(s) lido(s) · {len(recs)} registros de CIQ processados "
     f"(COMP e {len(testes_excluidos)} teste(s) reflexo excluídos)"
 )
 if skipped:
@@ -1999,8 +2092,8 @@ with tab_ep:
     app_online = os.name != "nt"
     if app_online and pacote_ep is None:
         with avisos_ep:
-            st.info("📦 Para ver a base de EP, suba o **pacote_ep.zip** no campo **\"Base de EP (.zip)\"** da "
-                    "barra lateral (à esquerda, logo abaixo do zip do CIQ).")
+            st.info("📦 Para ver a base de EP, suba o **pacote do app** (pacote_app_….zip) no campo de dados da "
+                    "barra lateral (à esquerda) — ele traz o CIQ e o EP juntos.")
     config_ep = ep_base.carrega_config()
     if (not app_online and config_ep["automatico"] and config_ep["pastas"]
             and not st.session_state.get("ep_sync_feito")):
@@ -2097,7 +2190,7 @@ with tab_ep:
                         except zipfile.BadZipFile:
                             eh_pacote = False
                         if eh_pacote:
-                            st.warning(f"\"{f.name}\" é um pacote de EP — suba-o no campo \"Base de EP (.zip)\" da "
+                            st.warning(f"\"{f.name}\" é um pacote do app — suba-o no campo de dados da "
                                        "barra lateral (à esquerda), não aqui.")
                             continue
                     entradas.append((f.name, conteudo))
@@ -2151,8 +2244,11 @@ with tab_ep:
         except (ValueError, zipfile.BadZipFile) as e:
             with avisos_ep:
                 st.error(f"Não foi possível usar o pacote de EP: {e}")
-    # de-para: o que veio no pacote tem prioridade (o app online não depende do arquivo no GitHub)
-    depara_ep = carrega_depara_ep(_mtime(ARQ_DEPARA_EP), depara_pacote)
+    # de-para: no app LOCAL vale o reference_data/ep_depara_testes.xlsx (é onde ele é editado — o de-para
+    # de um pacote antigo não pode desfazer as correções); no app ONLINE vale o que veio no pacote
+    # (assim ele não depende do arquivo no GitHub). Sem o arquivo local, usa o do pacote.
+    depara_usado = depara_pacote if (app_online or not ARQ_DEPARA_EP.exists()) else None
+    depara_ep = carrega_depara_ep(_mtime(ARQ_DEPARA_EP), depara_usado)
     if depara_ep.empty and not base_ep.empty:
         with avisos_ep:
             st.warning("De-para de testes não encontrado (nem no pacote de EP, nem em "
@@ -2520,14 +2616,24 @@ with tab_ep:
                     st.caption("Cada cor é uma amostra da rodada (1ª, 2ª, 3ª...); ◆ ControlLab · ● CAP. A linha cinza "
                                "liga a média das amostras de cada rodada. Faixa verde: ID ±1, Z ±2 e viés dentro do ESM.")
 
-        # pacote de EP (base + escolhas de equipamento): para o app online, que não guarda nada
-        with ep_tab_base:
-            st.divider()
-            st.download_button(
-                "📦 Baixar pacote de EP (.zip)", ep_base.monta_pacote(base_ep, escolhas_atuais, depara_pacote),
-                f"pacote_ep_{pd.Timestamp.today():%Y-%m-%d}.zip", "application/zip", key="ep_baixar_pacote",
-                help="Base de EP + os equipamentos escolhidos na aba Rodadas e resultados. É o arquivo que se sobe "
-                     "na barra lateral do app online (ou para guardar uma cópia de segurança).")
+
+    # ---- Pacote do app: CIQ (Infinity + Shift, como lido) + base de EP + escolhas por rodada + de-para ----
+    # Um arquivo só, para o app online (que não guarda nada) e para guardar o histórico.
+    escolhas_pacote = globals().get("escolhas_atuais")
+    if escolhas_pacote is None:   # sem rodadas visíveis no período: mantém as escolhas já salvas
+        escolhas_pacote = rodadas_pacote if rodadas_pacote is not None else ep_base.carrega_rodadas()
+    pacote_app_bytes = ep_base.monta_pacote(base_ep, escolhas_pacote, depara_usado, ciq_para_csv(recs_brutos))
+    nome_pacote_app = f"pacote_app_{pd.Timestamp.today():%Y-%m-%d}.zip"
+    ajuda_pacote = ("CIQ do Infinity e do Shift (todos os meses carregados) + base de EP + equipamentos escolhidos "
+                    "por rodada + de-para. Suba este arquivo no campo de dados da barra lateral, aqui ou no app online.")
+    with ep_tab_base:
+        st.divider()
+        st.download_button("📦 Baixar pacote do app (CIQ + EP)", pacote_app_bytes, nome_pacote_app,
+                           "application/zip", key="ep_baixar_pacote", help=ajuda_pacote)
+    with slot_pacote:
+        st.download_button("📦 Baixar pacote do app (CIQ + EP)", pacote_app_bytes, nome_pacote_app,
+                           "application/zip", key="sidebar_baixar_pacote", help=ajuda_pacote,
+                           use_container_width=True)
 
 # ---------------- SIGMA POR PERÍODO ----------------
 if completo:
